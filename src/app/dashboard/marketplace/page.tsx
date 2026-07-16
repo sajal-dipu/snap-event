@@ -1142,7 +1142,7 @@ export default function MarketplacePage() {
 
                     {portfolio.length === 0 && (
                       <div className="col-span-full border border-dashed border-border/80 rounded-2xl py-12 text-center text-xs text-muted-foreground italic">
-                        No portfolio photos uploaded yet. Click "Add Photos" above.
+                        No portfolio photos uploaded yet. Click &quot;Add Photos&quot; above.
                       </div>
                     )}
                   </div>
@@ -1296,7 +1296,7 @@ export default function MarketplacePage() {
 
                 {packages.length === 0 && !isAddingPkg && (
                   <div className="col-span-full border border-dashed border-border/85 rounded-2xl py-12 text-center text-xs text-muted-foreground italic">
-                    No packages created. Click "Create Package" above to get started.
+                    No packages created. Click &quot;Create Package&quot; above to get started.
                   </div>
                 )}
               </div>
