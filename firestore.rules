@@ -1,0 +1,314 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─────────────────────────────────────────────────────────
+    // HELPER FUNCTIONS
+    // ─────────────────────────────────────────────────────────
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function isPhotographer() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/photographers/$(request.auth.uid));
+    }
+
+    function isCustomer() {
+      return isAuthenticated() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'customer';
+    }
+
+    function isPhotographerOwner(photographerId) {
+      return isAuthenticated() && request.auth.uid == photographerId;
+    }
+
+    function isBookingParticipant(booking) {
+      return isAuthenticated() &&
+        (request.auth.uid == booking.customerId ||
+         request.auth.uid == booking.photographerId);
+    }
+
+    function isRoomPhotographer(room) {
+      return isAuthenticated() && request.auth.uid == room.photographerId;
+    }
+
+    function notUpdating(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    function hasValidTimestamp(field) {
+      return request.resource.data[field] is timestamp;
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: admins
+    // Only admins can read. Writes only via Cloud Functions.
+    // ─────────────────────────────────────────────────────────
+
+    match /admins/{adminId} {
+      allow read: if (isAuthenticated() && request.auth.uid == adminId) || isAdmin();
+      allow create: if isAuthenticated() && request.auth.uid == adminId && request.auth.token.email == 'sajusonaidipu@gmail.com';
+      allow update: if isAuthenticated() && request.auth.uid == adminId && notUpdating(['role', 'email']);
+      allow delete: if false;
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: users
+    // ─────────────────────────────────────────────────────────
+
+    match /users/{userId} {
+      // User reads their own profile; admin reads all; authenticated users can read public details
+      allow read: if isAuthenticated() || isOwner(userId) || isAdmin();
+
+      // Create: authenticated users create their own profile
+      allow create: if isOwner(userId) &&
+        request.resource.data.uid == userId &&
+        request.resource.data.role in ['customer', 'guest'] &&
+        request.resource.data.keys().hasAll(['uid', 'email', 'role', 'createdAt']);
+
+      // Update: own profile only, cannot change uid/role/createdAt
+      allow update: if isOwner(userId) &&
+        notUpdating(['uid', 'role', 'createdAt']);
+
+      // Delete: admin only
+      allow delete: if isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: photographers
+    // ─────────────────────────────────────────────────────────
+
+    match /photographers/{photographerId} {
+      allow read: if true;
+
+      // Create: the authenticated user creates their own photographer record
+      allow create: if isOwner(photographerId) &&
+        request.resource.data.uid == photographerId &&
+        request.resource.data.role == 'photographer' &&
+        request.resource.data.keys().hasAll(['uid', 'email', 'name', 'role', 'createdAt']);
+
+      // Update: photographer updates their own profile
+      // Admin fields like verificationStatus / isSuspended locked to admin
+      allow update: if isPhotographerOwner(photographerId) &&
+          notUpdating(['uid', 'role', 'createdAt', 'verificationStatus', 'isSuspended', 'verifiedBy', 'verifiedAt', 'ratingStats', 'totalBookings', 'completedBookings'])
+        || isAdmin();
+
+      // Delete: admin only
+      allow delete: if isAdmin();
+    }
+
+    // Subcollection under photographers: portfolio
+    match /photographers/{photographerId}/portfolio/{photoId} {
+      allow read: if true;
+      allow write: if isOwner(photographerId) || isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: photographers -> rooms (nested subcollection)
+    // ─────────────────────────────────────────────────────────
+
+    match /photographers/{photographerId}/rooms/{roomId} {
+      allow read: if true;
+
+      allow create: if isOwner(photographerId) &&
+        request.resource.data.photographerId == request.auth.uid &&
+        request.resource.data.keys().hasAll(['photographerId', 'name', 'eventDate', 'createdAt']);
+
+      allow update: if (isOwner(photographerId) &&
+          notUpdating(['photographerId', 'createdAt', 'qrCode']))
+        || isAdmin();
+
+      allow delete: if isOwner(photographerId) || isAdmin();
+    }
+
+    // Collection Group Match for rooms (required for querying rooms by ID globally)
+    match /{path=**}/rooms/{roomId} {
+      allow read: if true;
+    }
+
+    // Nested subcollection: photographers/{photographerId}/rooms/{roomId}/photos/{photoId}
+    match /photographers/{photographerId}/rooms/{roomId}/photos/{photoId} {
+      allow read: if true;
+      allow create: if isOwner(photographerId) &&
+        request.resource.data.photographerId == request.auth.uid;
+      allow update: if isOwner(photographerId) || isAdmin();
+      allow delete: if isOwner(photographerId) || isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: photos
+    // ─────────────────────────────────────────────────────────
+
+    match /photos/{photoId} {
+      allow read: if true;
+
+      // Create: photographer of the room only
+      allow create: if isPhotographer() &&
+        request.resource.data.photographerId == request.auth.uid &&
+        request.resource.data.keys().hasAll(['roomId', 'photographerId', 'uploadedBy', 'createdAt']);
+
+      // Update: photographer updates their photo; admin updates moderation fields
+      allow update: if (isAuthenticated() && resource.data.photographerId == request.auth.uid &&
+          notUpdating(['roomId', 'photographerId', 'uploadedBy', 'createdAt']))
+        || isAdmin();
+
+      // Delete: photographer or admin
+      allow delete: if (isAuthenticated() && resource.data.photographerId == request.auth.uid)
+        || isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: bookings
+    // ─────────────────────────────────────────────────────────
+
+    match /bookings/{bookingId} {
+      // Read: booking parties or admin
+      allow read: if isAdmin() ||
+                     (isAuthenticated() &&
+                       (request.auth.uid == resource.data.customerId ||
+                        request.auth.uid == resource.data.photographerId));
+
+      // Create: authenticated customers only
+      allow create: if isAuthenticated() &&
+        request.resource.data.customerId == request.auth.uid &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.keys().hasAll(['customerId', 'photographerId', 'eventDate', 'price', 'createdAt']);
+
+      // Update: photographer confirms/cancels their booking; customer cancels own; admin all
+      allow update: if isAdmin() ||
+        (isAuthenticated() && request.auth.uid == resource.data.photographerId &&
+          notUpdating(['customerId', 'photographerId', 'price', 'createdAt'])) ||
+        (isAuthenticated() && request.auth.uid == resource.data.customerId &&
+          request.resource.data.status == 'cancelled' &&
+          notUpdating(['customerId', 'photographerId', 'price', 'createdAt', 'photographerNotes']));
+
+      // Delete: admin only
+      allow delete: if isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: reviews
+    // ─────────────────────────────────────────────────────────
+
+    match /reviews/{reviewId} {
+      // Public read if not hidden
+      allow read: if resource.data.isHidden == false || isAdmin() ||
+                     (isAuthenticated() && resource.data.customerId == request.auth.uid);
+
+      // Create: authenticated customer who has a completed booking
+      allow create: if isAuthenticated() &&
+        request.resource.data.customerId == request.auth.uid &&
+        request.resource.data.rating >= 1 &&
+        request.resource.data.rating <= 5 &&
+        request.resource.data.keys().hasAll(['bookingId', 'photographerId', 'customerId', 'rating', 'comment', 'createdAt']);
+
+      // Update: customer edits their own review (not reportCount/isVerified/isHidden); photographer adds reply
+      allow update: if isAdmin() ||
+        (isAuthenticated() && request.auth.uid == resource.data.customerId &&
+          notUpdating(['bookingId', 'photographerId', 'customerId', 'createdAt', 'reportCount', 'isVerified', 'isHidden'])) ||
+        (isAuthenticated() && request.auth.uid == resource.data.photographerId &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reply', 'repliedAt', 'updatedAt']));
+
+      // Delete: admin only
+      allow delete: if isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: download_requests
+    // ─────────────────────────────────────────────────────────
+
+    match /download_requests/{requestId} {
+      // Read: requester, room's photographer, or admin
+      allow read: if isAdmin() ||
+                     (isAuthenticated() &&
+                       (request.auth.uid == resource.data.customerId ||
+                        request.auth.uid == resource.data.photographerId));
+
+      // Create: any authenticated user (guest submits face selfie to match)
+      allow create: if isAuthenticated() &&
+        request.resource.data.customerId == request.auth.uid &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.keys().hasAll(['roomId', 'photographerId', 'customerId', 'requestedPhotoIds', 'createdAt']);
+
+      // Update: photographer approves/rejects; admin all
+      allow update: if isAdmin() ||
+        (isAuthenticated() && request.auth.uid == resource.data.photographerId &&
+          request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'approvedPhotoIds', 'rejectedPhotoIds', 'downloadUrl', 'downloadExpiresAt', 'reviewedAt', 'reviewedBy', 'rejectionReason', 'updatedAt']));
+
+      // Delete: admin only
+      allow delete: if isAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: notifications
+    // ─────────────────────────────────────────────────────────
+
+    match /notifications/{notificationId} {
+      // Read own notifications
+      allow read: if isAdmin() ||
+                     (isAuthenticated() && request.auth.uid == resource.data.recipientId);
+
+      // Create: Allow authenticated users to dispatch notifications
+      allow create: if isAuthenticated();
+
+      // Update: recipient marks as read only
+      allow update: if isAuthenticated() &&
+        request.auth.uid == resource.data.recipientId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead', 'readAt']);
+
+      // Delete: recipient or admin
+      allow delete: if isAdmin() ||
+                       (isAuthenticated() && request.auth.uid == resource.data.recipientId);
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: analytics
+    // Admin read only. Writes from Cloud Functions.
+    // ─────────────────────────────────────────────────────────
+
+    match /analytics/{documentId} {
+      allow read: if isAdmin() ||
+                     (isAuthenticated() &&
+                       resource.data.type == 'photographer_monthly' &&
+                       resource.data.photographerId == request.auth.uid);
+      allow write: if false; // Cloud Functions only
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: audit_logs
+    // Admin read only. Append-only via Cloud Functions.
+    // ─────────────────────────────────────────────────────────
+
+    match /audit_logs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false; // Cloud Functions only
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: settings
+    // Admin read/write only.
+    // ─────────────────────────────────────────────────────────
+
+    match /settings/{documentId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+  }
+}
