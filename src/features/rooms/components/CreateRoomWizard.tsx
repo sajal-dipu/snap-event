@@ -24,11 +24,16 @@ import { Textarea } from "@/components/ui/Textarea";
 import { Switch } from "@/components/ui/Switch";
 import { Select } from "@/components/ui/Select";
 import { Card, CardContent } from "@/components/ui/Card";
+import { Modal } from "@/components/ui/Modal";
+
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { roomService } from "@/services/RoomService";
 import { bookingService } from "@/services/BookingService";
-import { generateStrongPassword } from "@/utils/crypto";
+import { generateStrongPassword, generateSecurityCode } from "@/utils/crypto";
+import { APP_URL } from "@/utils/helpers";
+
+
 import { CreateRoomFormSchema, type ValidatedCreateRoomForm } from "../schemas";
 import { db } from "@/lib/firebase/firestore";
 import { collection, doc } from "firebase/firestore";
@@ -43,6 +48,11 @@ export function CreateRoomWizard() {
   const [generatedPassword, setGeneratedPassword] = React.useState("");
   const [copied, setCopied] = React.useState(false);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const [securityCode, setSecurityCode] = React.useState("");
+  const [hasSavedSecurityCode, setHasSavedSecurityCode] = React.useState(false);
+  const [copiedSecurityCode, setCopiedSecurityCode] = React.useState(false);
+  const [isSuccessOpen, setIsSuccessOpen] = React.useState(false);
+
 
   // Initialize Form
   const {
@@ -157,6 +167,9 @@ export function CreateRoomWizard() {
         if (!generatedPassword) {
           setGeneratedPassword(generateStrongPassword());
         }
+        if (!securityCode) {
+          setSecurityCode(generateSecurityCode());
+        }
         setStep(3);
       } else {
         console.log("Validation failed on step 2. Errors:", errors);
@@ -192,22 +205,14 @@ export function CreateRoomWizard() {
       toast.error("Copy failed");
     }
   };
-
   const handleFormSubmit = async (data: ValidatedCreateRoomForm) => {
+    if (isSubmitting) return;
     console.log("[CreateRoom debug] Starting room creation submit pipeline...");
     if (!user) {
       console.error("[CreateRoom debug] User context is null or undefined.");
       toast.error("You must be authenticated to create a room.");
       return;
     }
-
-    console.log("[CreateRoom debug] Auth context:", {
-      uid: user.uid,
-      displayName: user.displayName,
-      email: user.email,
-    });
-    console.log("[CreateRoom debug] Form Data:", JSON.stringify(data));
-    console.log("[CreateRoom debug] Target Room ID:", generatedRoomId);
 
     setIsSubmitting(true);
     try {
@@ -221,6 +226,7 @@ export function CreateRoomWizard() {
           id: generatedRoomId,
           photographerId: user.uid,
           photographerName: user.displayName || user.email || "Photographer",
+          securityCode, // Save security code
         },
         generatedPassword
       );
@@ -241,7 +247,7 @@ export function CreateRoomWizard() {
       toast.success("Virtual Event Room created successfully!");
       // Session storage bypass flag so developer can enter this room immediately
       sessionStorage.setItem(`room-gate-unlocked-${generatedRoomId}`, "true");
-      router.push("/dashboard/rooms");
+      setIsSuccessOpen(true); // Open success dialog
     } catch (error: any) {
       console.error("[CreateRoom debug] Caught exception during room creation:", error);
       const errorMsg = error?.message || error?.toString() || "Unknown error during room creation";
@@ -617,6 +623,61 @@ export function CreateRoomWizard() {
                   </div>
                 </div>
 
+                {/* Security Code Display Box */}
+                <div className="p-5 rounded-xl border border-purple-200 dark:border-purple-900/50 bg-purple-50/30 dark:bg-purple-950/10 text-center space-y-3 relative overflow-hidden">
+                  <label className="text-[10px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-wider block">
+                    Generated Room Recovery Security Code
+                  </label>
+
+                  <div className="flex items-center justify-center gap-3">
+                    <span className="text-xl font-bold font-mono tracking-widest text-purple-700 dark:text-purple-300 bg-background border border-purple-200 dark:border-purple-900/50 px-6 py-2.5 rounded-lg select-all shadow-inner">
+                      {securityCode}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(securityCode);
+                          setCopiedSecurityCode(true);
+                          toast.success("Security Code copied!");
+                          setTimeout(() => setCopiedSecurityCode(false), 2000);
+                        } catch (err) {
+                          toast.error("Copy failed");
+                        }
+                      }}
+                      className="h-11 w-11 shrink-0 border-purple-200 dark:border-purple-900/50 hover:bg-purple-100/50 dark:hover:bg-purple-950/30"
+                    >
+                      {copiedSecurityCode ? <Check className="h-5 w-5 text-green-500" /> : <Copy className="h-5 w-5 text-purple-400" />}
+                    </Button>
+                  </div>
+
+                  <div className="p-3 bg-yellow-500/10 dark:bg-yellow-500/5 text-yellow-600 dark:text-yellow-400 rounded-lg flex items-start gap-2.5 text-left border border-yellow-500/20">
+                    <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                    <div className="text-[10px] leading-normal font-semibold">
+                      <p className="font-bold text-[11px] uppercase tracking-wide">Recovery Warning</p>
+                      <p className="mt-0.5 opacity-90 text-[10px]">
+                        Save this security code carefully. This code is required to recover and re-access your virtual room in the future.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Acknowledge Checkbox */}
+                <div className="flex items-start gap-3 p-3.5 rounded-xl border border-border bg-card/40">
+                  <input
+                    type="checkbox"
+                    id="save-code-checkbox"
+                    checked={hasSavedSecurityCode}
+                    onChange={(e) => setHasSavedSecurityCode(e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary mt-0.5 cursor-pointer accent-primary"
+                  />
+                  <label htmlFor="save-code-checkbox" className="text-xs text-foreground font-semibold leading-normal cursor-pointer select-none">
+                    I have saved this security code.
+                  </label>
+                </div>
+
                 {/* Metadata Review */}
                 <div className="space-y-2 border-t border-border pt-4 text-xs">
                   <p className="font-bold text-muted-foreground uppercase tracking-wider">Room Metadata Summary</p>
@@ -628,7 +689,7 @@ export function CreateRoomWizard() {
                     <div>
                       <span className="text-muted-foreground">QR Target URL:</span>
                       <span className="font-semibold ml-1 truncate block font-mono text-[10px]">
-                        https://snapevent.com/event/{generatedRoomId.substring(0, 6)}...
+                        {APP_URL}/event/{generatedRoomId.substring(0, 6)}...
                       </span>
                     </div>
                   </div>
@@ -667,14 +728,60 @@ export function CreateRoomWizard() {
           ) : (
             <Button
               type="submit"
-              className="w-full sm:w-auto gap-2 bg-primary text-primary-foreground hover:bg-primary/95 transition-all shadow-lg shadow-primary/20 px-6 font-bold"
-              disabled={isSubmitting}
+              className="w-full sm:w-auto gap-2 bg-primary text-primary-foreground hover:bg-primary/95 transition-all shadow-lg shadow-primary/20 px-6 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={isSubmitting || !hasSavedSecurityCode}
             >
-              {isSubmitting ? "Creating event room..." : "Create Room"}
+              {isSubmitting ? "Creating event room..." : "Create Virtual Room"}
             </Button>
           )}
         </div>
       </form>
+
+      {/* Success Modal */}
+      <Modal
+        isOpen={isSuccessOpen}
+        onClose={() => {}} // Disallow close by clicking backdrop
+        title="Virtual Room Created Successfully"
+        description="Your secure event sharing gallery is now online."
+        className="max-w-md select-none border-purple-500/25 border-2 shadow-2xl shadow-purple-500/10"
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-muted-foreground leading-relaxed text-center sm:text-left">
+            Your Virtual Room has been successfully created. Please review and ensure you have saved your credentials.
+          </p>
+
+          <div className="p-4 rounded-xl border border-purple-100 dark:border-purple-900/50 bg-purple-50/20 dark:bg-purple-950/5 text-center space-y-2.5">
+            <div>
+              <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Security Code</span>
+              <span className="text-base font-extrabold font-mono tracking-widest text-purple-700 dark:text-purple-300 block mt-1">
+                {securityCode}
+              </span>
+            </div>
+            <div className="border-t border-purple-100 dark:border-purple-900/50 pt-2.5">
+              <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Access Password</span>
+              <span className="text-base font-extrabold font-mono tracking-widest text-primary block mt-1">
+                {generatedPassword}
+              </span>
+            </div>
+          </div>
+
+          <div className="p-3 bg-yellow-500/10 dark:bg-yellow-500/5 text-yellow-600 dark:text-yellow-400 rounded-lg text-left border border-yellow-500/20 text-[10px] font-medium leading-relaxed">
+            Keep your security code safe for future access. This code is required to recover and re-access your virtual room in the future.
+          </div>
+
+          <div className="flex justify-end pt-2">
+            <Button
+              className="w-full bg-primary hover:bg-primary/95 text-primary-foreground font-bold rounded-xl shadow-lg shadow-primary/20 py-2.5"
+              onClick={() => {
+                setIsSuccessOpen(false);
+                router.push("/dashboard/rooms");
+              }}
+            >
+              Go to Rooms List
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

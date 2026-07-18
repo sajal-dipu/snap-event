@@ -15,7 +15,8 @@ import {
   ChevronRight,
   SquareCheck,
   Square,
-  Sparkle
+  Sparkle,
+  RefreshCw
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { PhotographerDashboardLayout } from "@/components/layout/PhotographerDashboardLayout";
@@ -26,9 +27,13 @@ import { Modal } from "@/components/ui/Modal";
 import { Card, CardContent } from "@/components/ui/Card";
 import { useAuth } from "@/contexts/AuthContext";
 import { roomService } from "@/services/RoomService";
+import { db } from "@/lib/firebase/firestore";
+import { collection, query, where, getDocs } from "firebase/firestore";
 import { RoomCard } from "@/features/rooms/components/RoomCard";
 import { DeleteRoomDialog } from "@/features/rooms/components/DeleteRoomDialog";
 import { QRCodeCard } from "@/features/rooms/components/QRCodeCard";
+import { APP_URL } from "@/utils/helpers";
+
 import { toast } from "sonner";
 import type { VirtualRoom, RoomStatus } from "@/types";
 
@@ -38,6 +43,7 @@ export default function RoomsPage() {
 
   // Data States
   const [rooms, setRooms] = React.useState<VirtualRoom[]>([]);
+  const [photos, setPhotos] = React.useState<any[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
 
   // Selection state for bulk actions
@@ -63,21 +69,36 @@ export default function RoomsPage() {
     room: null,
   });
 
-  const [dupSuccessDialog, setDupSuccessDialog] = React.useState<{ isOpen: boolean; password: string; roomId: string }>({
+  const [dupSuccessDialog, setDupSuccessDialog] = React.useState<{ isOpen: boolean; password: string; roomId: string; securityCode?: string }>({
     isOpen: false,
     password: "",
     roomId: "",
+    securityCode: "",
   });
 
+  const [copiedSecurityCode, setCopiedSecurityCode] = React.useState(false);
+  const [isRecoverOpen, setIsRecoverOpen] = React.useState(false);
+  const [recoveryCode, setRecoveryCode] = React.useState("");
+  const [isRecovering, setIsRecovering] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
 
-  // Fetch rooms on load
+
   const loadRooms = React.useCallback(async () => {
     if (!user) return;
     setIsLoading(true);
     try {
       const fetched = await roomService.listByPhotographer(user.uid);
       setRooms(fetched);
+
+      // Fetch all unique photos for this photographer
+      const qPhotos = query(
+        collection(db, "photos"),
+        where("photographerId", "==", user.uid),
+        where("isDeleted", "==", false)
+      );
+      const photoSnaps = await getDocs(qPhotos);
+      const fetchedPhotos = photoSnaps.docs.map(doc => doc.data());
+      setPhotos(fetchedPhotos);
     } catch (err) {
       console.error(err);
       toast.error("Failed to load virtual rooms");
@@ -96,10 +117,10 @@ export default function RoomsPage() {
     const active = rooms.filter((r) => r.status === "active" || r.status === "live" || r.status === "upcoming").length;
     const completed = rooms.filter((r) => r.status === "completed").length;
     const totalVisitors = rooms.reduce((sum, r) => sum + (r.guestCount || 0), 0);
-    const totalPhotos = rooms.reduce((sum, r) => sum + (r.photoCount || 0), 0);
+    const totalPhotos = photos.length; // Do NOT add AI indexed photos into total count.
 
     return { totalRooms, active, completed, totalVisitors, totalPhotos };
-  }, [rooms]);
+  }, [rooms, photos]);
 
   // Filters & Search logic
   const filteredRooms = React.useMemo(() => {
@@ -151,6 +172,7 @@ export default function RoomsPage() {
         isOpen: true,
         roomId: result.id,
         password: result.password,
+        securityCode: result.securityCode,
       });
       loadRooms();
       toast.success("Room duplicated successfully!");
@@ -161,16 +183,17 @@ export default function RoomsPage() {
     }
   };
 
-  const handleDeleteConfirm = async () => {
-    if (!user) return;
+  const handleDeleteConfirm = async (onProgress?: any) => {
+    if (!user) return { failedCloudinaryCount: 0 };
     try {
-      await roomService.deleteRoom(deleteDialog.roomId, user.uid);
-      toast.success("Virtual Room deleted");
+      const res = await roomService.deleteRoom(deleteDialog.roomId, user.uid, onProgress);
       setSelectedIds((prev) => prev.filter((id) => id !== deleteDialog.roomId));
       loadRooms();
+      return res;
     } catch (err) {
       console.error(err);
       toast.error("Failed to delete virtual room");
+      throw err;
     }
   };
 
@@ -217,6 +240,46 @@ export default function RoomsPage() {
     }
   };
 
+  const handleCopyDupSecurityCode = async () => {
+    try {
+      if (dupSuccessDialog.securityCode) {
+        await navigator.clipboard.writeText(dupSuccessDialog.securityCode);
+        setCopiedSecurityCode(true);
+        toast.success("Security Code copied!");
+        setTimeout(() => setCopiedSecurityCode(false), 2000);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleRecoverRoom = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    if (!recoveryCode.trim()) {
+      toast.error("Please enter a recovery security code.");
+      return;
+    }
+
+    setIsRecovering(true);
+    try {
+      const room = await roomService.recoverRoom(recoveryCode, user.uid);
+      if (room) {
+        toast.success("Room access successfully recovered!");
+        setIsRecoverOpen(false);
+        setRecoveryCode("");
+        router.push(`/dashboard/rooms/${room.id}`);
+      } else {
+        toast.error("Invalid security code or room does not belong to you.");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("An error occurred during room recovery.");
+    } finally {
+      setIsRecovering(false);
+    }
+  };
+
   const tabs: { label: string; value: "all" | RoomStatus }[] = [
     { label: "All Rooms", value: "all" },
     { label: "Active", value: "active" },
@@ -236,12 +299,22 @@ export default function RoomsPage() {
               Create, secure, and monitor virtual galleries for your photography shoots.
             </p>
           </div>
-          <Link href="/dashboard/rooms/create" className="shrink-0">
-            <Button className="gap-2 bg-primary text-primary-foreground hover:bg-primary/95 transition-all shadow-md shadow-primary/10 rounded-xl">
-              <PlusCircle className="h-5 w-5" />
-              Create Room
+          <div className="flex flex-wrap gap-2 sm:gap-3 shrink-0">
+            <Button
+              onClick={() => setIsRecoverOpen(true)}
+              variant="outline"
+              className="gap-2 border-primary/25 text-primary hover:bg-primary/5 transition-all rounded-xl font-bold text-xs px-4"
+            >
+              <RefreshCw className="h-4.5 w-4.5" />
+              Recover Room
             </Button>
-          </Link>
+            <Link href="/dashboard/rooms/create">
+              <Button className="gap-2 bg-primary text-primary-foreground hover:bg-primary/95 transition-all shadow-md shadow-primary/10 rounded-xl font-bold text-xs px-4">
+                <PlusCircle className="h-5 w-5" />
+                Create Room
+              </Button>
+            </Link>
+          </div>
         </div>
 
         {/* Dashboard Aggregate Metric Cards */}
@@ -473,27 +546,28 @@ export default function RoomsPage() {
         {qrDialog.room && (
           <QRCodeCard
             roomId={qrDialog.room.id}
-            qrCodeUrl={qrDialog.room.qrCode.url}
+            qrCodeUrl={`${APP_URL}/event/${qrDialog.room.id}`}
             roomName={qrDialog.room.name}
           />
         )}
       </Modal>
 
-      {/* Duplicate Room Success Modal (reveals password one-time-only) */}
+      {/* Duplicate Room Success Modal (reveals credentials one-time-only) */}
       <Modal
         isOpen={dupSuccessDialog.isOpen}
-        onClose={() => setDupSuccessDialog({ isOpen: false, password: "", roomId: "" })}
+        onClose={() => setDupSuccessDialog({ isOpen: false, password: "", roomId: "", securityCode: "" })}
         title="Duplicated Room Credentials"
         description="Duplicate operation successfully set up your new event room."
         className="max-w-md"
       >
-        <div className="space-y-4">
-          <div className="p-3.5 rounded-xl border border-border bg-zinc-50 dark:bg-zinc-950/40 text-center space-y-3">
+        <div className="space-y-4 select-none">
+          {/* Access Password Card */}
+          <div className="p-3.5 rounded-xl border border-border bg-zinc-50 dark:bg-zinc-950/40 text-center space-y-2">
             <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
               New Room Access Password
             </label>
             <div className="flex items-center justify-center gap-2">
-              <span className="text-lg font-bold font-mono tracking-widest text-primary bg-background border border-border px-4 py-2 rounded-lg select-all">
+              <span className="text-base font-bold font-mono tracking-widest text-primary bg-background border border-border px-4 py-2 rounded-lg select-all">
                 {dupSuccessDialog.password}
               </span>
               <Button
@@ -505,18 +579,46 @@ export default function RoomsPage() {
                 {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4 text-zinc-400" />}
               </Button>
             </div>
-            <div className="p-2.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 flex items-start gap-2 text-left text-[10px]">
-              <Sparkles className="h-4 w-4 shrink-0 mt-0.5" />
-              <p className="font-semibold leading-normal">
-                This password has been hashed and will NOT be shown again. Please save it immediately to access this room details screen later.
+            <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 flex items-start gap-2 text-left text-[9px] font-medium leading-normal">
+              <Sparkles className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+              <p>
+                This password has been hashed and will NOT be shown again. Save it immediately.
               </p>
             </div>
           </div>
+
+          {/* Security Code Card */}
+          {dupSuccessDialog.securityCode && (
+            <div className="p-3.5 rounded-xl border border-purple-200 dark:border-purple-900/50 bg-purple-50/20 dark:bg-purple-950/5 text-center space-y-2">
+              <label className="text-[10px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-wider block font-semibold">
+                New Room Recovery Security Code
+              </label>
+              <div className="flex items-center justify-center gap-2">
+                <span className="text-base font-bold font-mono tracking-widest text-purple-700 dark:text-purple-300 bg-background border border-purple-200 dark:border-purple-900/50 px-4 py-2 rounded-lg select-all">
+                  {dupSuccessDialog.securityCode}
+                </span>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleCopyDupSecurityCode}
+                  className="h-10 w-10 border-purple-200 dark:border-purple-900/50 hover:bg-purple-100/50 dark:hover:bg-purple-950/30"
+                >
+                  {copiedSecurityCode ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4 text-purple-400" />}
+                </Button>
+              </div>
+              <div className="p-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-600 dark:text-yellow-450 flex items-start gap-2 text-left text-[9px] font-medium leading-normal">
+                <Sparkles className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                <p>
+                  This security code is permanently saved to recovery but is displayed here for copy.
+                </p>
+              </div>
+            </div>
+          )}
+
           <div className="flex justify-end pt-2">
             <Button
-              className="bg-primary hover:bg-primary/95 text-primary-foreground font-bold rounded-xl"
+              className="bg-primary hover:bg-primary/95 text-primary-foreground font-bold rounded-xl w-full"
               onClick={() => {
-                // Unlock room session storage before route transition
                 sessionStorage.setItem(`room-gate-unlocked-${dupSuccessDialog.roomId}`, "true");
                 router.push(`/dashboard/rooms/${dupSuccessDialog.roomId}`);
               }}
@@ -525,6 +627,58 @@ export default function RoomsPage() {
             </Button>
           </div>
         </div>
+      </Modal>
+
+      {/* Recover Room Modal */}
+      <Modal
+        isOpen={isRecoverOpen}
+        onClose={() => {
+          setIsRecoverOpen(false);
+          setRecoveryCode("");
+        }}
+        title="Recover Existing Room"
+        description="Enter the recovery security code to reopen your event room."
+        className="max-w-md"
+      >
+        <form onSubmit={handleRecoverRoom} className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider block">
+              Security Code
+            </label>
+            <Input
+              type="text"
+              placeholder="XXXX-XXXX"
+              value={recoveryCode}
+              onChange={(e) => setRecoveryCode(e.target.value)}
+              className="rounded-xl text-xs font-mono tracking-widest text-center"
+              required
+              disabled={isRecovering}
+            />
+          </div>
+
+          <div className="flex gap-3 justify-end pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setIsRecoverOpen(false);
+                setRecoveryCode("");
+              }}
+              className="rounded-xl text-xs font-semibold"
+              disabled={isRecovering}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              className="bg-primary hover:bg-primary/95 text-primary-foreground font-bold rounded-xl text-xs flex items-center gap-1.5"
+              disabled={isRecovering || !recoveryCode.trim()}
+            >
+              {isRecovering ? <LoadingSpinner className="h-4 w-4" /> : null}
+              Recover Room
+            </Button>
+          </div>
+        </form>
       </Modal>
     </PhotographerDashboardLayout>
   );

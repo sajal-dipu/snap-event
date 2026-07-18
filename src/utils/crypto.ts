@@ -217,3 +217,27 @@ export async function hashPassword(password: string): Promise<string> {
   }
 }
 
+/**
+ * Generates a unique security code of the format XXXX-XXXX (e.g. A7F3-D9K2).
+ */
+export function generateSecurityCode(): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const getSecureChar = () => {
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      const array = new Uint32Array(1);
+      crypto.getRandomValues(array);
+      return chars[array[0] % chars.length];
+    }
+    return chars[Math.floor(Math.random() * chars.length)];
+  };
+
+  let part1 = "";
+  let part2 = "";
+  for (let i = 0; i < 4; i++) {
+    part1 += getSecureChar();
+    part2 += getSecureChar();
+  }
+  return `${part1}-${part2}`;
+}
+
+

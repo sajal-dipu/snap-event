@@ -21,6 +21,8 @@ import {
   ExternalLink 
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
+import { APP_URL } from "@/utils/helpers";
+
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Dropdown } from "@/components/ui/Dropdown";
@@ -59,7 +61,7 @@ export function RoomCard({ room, onDuplicate, onDelete, onQRPreview }: RoomCardP
   const handleCopyLink = async (e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     try {
-      await navigator.clipboard.writeText(room.qrCode.url);
+      await navigator.clipboard.writeText(`${APP_URL}/event/${room.id}`);
       toast.success("Room URL copied to clipboard!");
     } catch (err) {
       toast.error("Failed to copy link");

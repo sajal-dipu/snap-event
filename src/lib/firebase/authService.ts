@@ -12,6 +12,8 @@ import {
 } from "firebase/auth";
 import { auth } from "./auth";
 import { logger } from "@/utils/logger";
+import { APP_URL } from "@/utils/helpers";
+
 
 // ────────────────────────────────────────────────────────────
 // FIREBASE AUTH ERROR CODE → USER-FRIENDLY MESSAGES
@@ -94,7 +96,7 @@ export async function signInWithEmail(
 export async function sendVerificationEmail(user: User): Promise<void> {
   try {
     const actionCodeSettings = {
-      url: `${process.env.NEXT_PUBLIC_APP_URL}/login?verified=1`,
+      url: `${APP_URL}/login?verified=1`,
       handleCodeInApp: false,
     };
     await sendEmailVerification(user, actionCodeSettings);
@@ -111,7 +113,7 @@ export async function sendVerificationEmail(user: User): Promise<void> {
 export async function sendPasswordReset(email: string): Promise<void> {
   try {
     const actionCodeSettings = {
-      url: `${process.env.NEXT_PUBLIC_APP_URL}/login`,
+      url: `${APP_URL}/login`,
       handleCodeInApp: false,
     };
     await sendPasswordResetEmail(auth, email, actionCodeSettings);

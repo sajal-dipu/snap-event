@@ -103,3 +103,25 @@ export function getPlaceholderImage(
   const pool = images[type];
   return pool[index % pool.length];
 }
+
+/**
+ * Global APP_URL helper that dynamically detects the environment url.
+ * Prioritizes NEXT_PUBLIC_APP_URL, falls back to window.location.origin in the browser,
+ * NEXT_PUBLIC_VERCEL_URL / VERCEL_URL on Vercel server-side, and localhost as a final fallback.
+ */
+const getBaseUrl = (): string => {
+  if (process.env.NEXT_PUBLIC_APP_URL) {
+    return process.env.NEXT_PUBLIC_APP_URL;
+  }
+  if (typeof window !== "undefined" && window.location.origin) {
+    return window.location.origin;
+  }
+  const vercelUrl = process.env.NEXT_PUBLIC_VERCEL_URL || process.env.VERCEL_URL;
+  if (vercelUrl) {
+    return vercelUrl.startsWith("http") ? vercelUrl : `https://${vercelUrl}`;
+  }
+  return "http://localhost:3000";
+};
+
+export const APP_URL = getBaseUrl();
+

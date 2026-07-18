@@ -41,6 +41,8 @@ import { roomService } from "@/services/RoomService";
 import { bookingService } from "@/services/BookingService";
 import { photoService } from "@/services/PhotoService";
 import { QRCodeCard } from "@/features/rooms/components/QRCodeCard";
+import { APP_URL } from "@/utils/helpers";
+
 import { PhotoUploader } from "@/features/gallery/components/PhotoUploader";
 import { UploadQueue } from "@/features/gallery/components/UploadQueue";
 import { db } from "@/lib/firebase/firestore";
@@ -152,8 +154,7 @@ export default function AdminRoomDetailPage({ params }: PageProps) {
     if (!confirm("Are you sure you want to regenerate the QR code? This will update the QR code metadata.")) return;
     setIsSubmitting(true);
     try {
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://snapevent.com";
-      const roomUrl = `${appUrl}/event/${room.id}`;
+      const roomUrl = `${APP_URL}/event/${room.id}`;
       const newQrCode = {
         code: room.id.substring(0, 8).toUpperCase(),
         url: roomUrl,
@@ -181,7 +182,7 @@ export default function AdminRoomDetailPage({ params }: PageProps) {
   // Share Room Handler
   const handleShareRoom = async () => {
     if (!room) return;
-    const shareUrl = `${window.location.origin}/event/${room.id}`;
+    const shareUrl = `${APP_URL}/event/${room.id}`;
     
     try {
       if (navigator.share) {
@@ -717,7 +718,7 @@ export default function AdminRoomDetailPage({ params }: PageProps) {
             </Card>
 
             {/* QR Code Cards display */}
-            <QRCodeCard roomId={room.id} qrCodeUrl={room.qrCode.url} roomName={room.name} />
+            <QRCodeCard roomId={room.id} qrCodeUrl={`${APP_URL}/event/${room.id}`} roomName={room.name} />
 
           </div>
 

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { Controller } from "react-hook-form";
-import { MapPin, Shield, Calendar, Clock, Trash2, CheckCircle, Info } from "lucide-react";
+import { MapPin, Shield, Calendar, Clock, Trash2, CheckCircle, Info, Copy, Check } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/Textarea";
 import { Switch } from "@/components/ui/Switch";
 import { Select } from "@/components/ui/Select";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { toast } from "sonner";
 import type { VirtualRoom } from "@/types";
 
 export interface SettingsTabProps {
@@ -35,6 +36,7 @@ export function SettingsTab({
   handleSettingsSubmit,
   setIsDeleteOpen
 }: SettingsTabProps) {
+  const [copiedSecurityCode, setCopiedSecurityCode] = React.useState(false);
   
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -183,6 +185,39 @@ export function SettingsTab({
                   className="rounded-xl text-xs"
                 />
               </div>
+
+              {room.securityCode && (
+                <div className="space-y-1.5 pt-3 border-t border-border">
+                  <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider select-none">
+                    Room Recovery Security Code
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold font-mono tracking-widest text-purple-700 dark:text-purple-300 bg-purple-50/20 dark:bg-purple-950/10 border border-purple-200/50 dark:border-purple-900/50 px-4 py-2.5 rounded-xl select-all shadow-inner block grow text-center">
+                      {room.securityCode}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(room.securityCode || "");
+                          setCopiedSecurityCode(true);
+                          toast.success("Security Code copied!");
+                          setTimeout(() => setCopiedSecurityCode(false), 2000);
+                        } catch (err) {
+                          toast.error("Copy failed");
+                        }
+                      }}
+                      className="rounded-xl text-xs h-10 px-3 border-purple-200 dark:border-purple-900/50 hover:bg-purple-100/50 dark:hover:bg-purple-950/30"
+                    >
+                      {copiedSecurityCode ? <Check className="h-4.5 w-4.5 text-green-500" /> : <Copy className="h-4.5 w-4.5 text-purple-400" />}
+                    </Button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    This security code can be used to recover access to this room in the future. Keep it safe.
+                  </p>
+                </div>
+              )}
             </div>
 
           </CardContent>

@@ -32,10 +32,23 @@ export class PhotoService {
   public async create(data: ValidatedPhoto): Promise<string> {
     try {
       const parsed = PhotoSchema.parse(data);
+      const publicId = parsed.asset.publicId;
+      console.log("Creating Firestore doc:", publicId);
       logger.info(`[PhotoService.create] Creating photo doc. roomId: ${parsed.roomId}, status: processing, isDeleted: false, caller: PhotoService.create`);
+
+      const existingQuery = query(
+        collection(db, this.collection),
+        where("publicId", "==", publicId)
+      );
+      const existingSnaps = await getDocs(existingQuery);
+      if (!existingSnaps.empty) {
+        logger.info(`[PhotoService.create] Photo with publicId ${publicId} already exists. Skipping document creation.`);
+        return existingSnaps.docs[0].id;
+      }
 
       const docRef = await addDoc(collection(db, this.collection), {
         ...parsed,
+        publicId,
         faces: [],
         faceCount: 0,
         isProcessed: false,

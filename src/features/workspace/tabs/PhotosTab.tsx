@@ -101,6 +101,10 @@ export function PhotosTab({
   setActiveTab
 }: PhotosTabProps) {
 
+  console.log("Room ID:", roomId);
+  console.log("Photos fetched:", photos.length);
+  console.log("Photo data:", photos);
+
   return (
     <div className="space-y-6 relative min-h-[500px]">
       

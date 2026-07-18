@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   TrendingUp,
   Image as ImageIcon,
@@ -78,6 +79,8 @@ import {
   useDeleteAlbumMutation
 } from "@/features/gallery/hooks/useGallery";
 import { QRCodeCard } from "@/features/rooms/components/QRCodeCard";
+import { APP_URL } from "@/utils/helpers";
+
 import { RoomSecurityDialog } from "@/features/rooms/components/RoomSecurityDialog";
 import { DeleteRoomDialog } from "@/features/rooms/components/DeleteRoomDialog";
 import { Modal } from "@/components/ui/Modal";
@@ -111,6 +114,7 @@ interface PageProps {
 export default function RoomDetailsPage({ params }: PageProps) {
   const router = useRouter();
   const { user } = useAuth();
+  const queryClient = useQueryClient();
 
   // Dynamic Route params
   const { roomId } = React.use(params);
@@ -418,6 +422,15 @@ export default function RoomDetailsPage({ params }: PageProps) {
   );
 
   const photos = photosData?.pages.flatMap((page: any) => page.data) || [];
+  console.log("Photos Query:", photos);
+
+  // Auto-refresh photos on activeTab change to "photos"
+  React.useEffect(() => {
+    if (activeTab === "photos") {
+      console.log(`[RoomDetailsPage] Photos tab selected. Refetching photos for roomId: ${roomId}...`);
+      refetchPhotos();
+    }
+  }, [activeTab, roomId, refetchPhotos]);
 
   // Recent Uploads Feed query (limit 12)
   const { data: recentPhotosData } = useGalleryPhotos(roomId, { sortBy: "newest" }, 12);
@@ -467,6 +480,7 @@ export default function RoomDetailsPage({ params }: PageProps) {
           aiProcessed,
           downloads,
         }));
+        queryClient.invalidateQueries({ queryKey: ["gallery-photos", roomId] });
       },
       (err) => {
         console.error("Overview photo subscription failed:", err);
@@ -595,7 +609,7 @@ export default function RoomDetailsPage({ params }: PageProps) {
 
   // Actions
   const handleShareRoom = async () => {
-    const shareUrl = `${window.location.origin}/event/${roomId}`;
+    const shareUrl = `${APP_URL}/event/${roomId}`;
     if (navigator.share) {
       try {
         await navigator.share({
@@ -665,15 +679,16 @@ export default function RoomDetailsPage({ params }: PageProps) {
     }
   };
 
-  const handleDeleteConfirm = async () => {
-    if (!user) return;
+  const handleDeleteConfirm = async (onProgress?: any) => {
+    if (!user) return { failedCloudinaryCount: 0 };
     try {
-      await roomService.deleteRoom(roomId, user.uid);
-      toast.success("Room deleted successfully");
+      const res = await roomService.deleteRoom(roomId, user.uid, onProgress);
       router.push("/dashboard/rooms");
+      return res;
     } catch (err) {
       console.error(err);
       toast.error("Failed to delete room");
+      throw err;
     }
   };
 

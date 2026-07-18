@@ -110,6 +110,9 @@ export function UploadQueue({ files, roomId, onClear, onUploadComplete }: Upload
       formData.append("upload_preset", uploadPreset);
       formData.append("folder", folderPath);
 
+      console.log(`[UploadQueue] Starting client-side Cloudinary upload for: "${item.name}"`);
+      console.log(`- Preset: "${uploadPreset}", Cloud: "${cloudName}", Folder: "${folderPath}"`);
+
       xhr.open("POST", `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, true);
 
       // Progress listener
@@ -122,11 +125,18 @@ export function UploadQueue({ files, roomId, onClear, onUploadComplete }: Upload
 
       // Completion listener
       xhr.onload = async () => {
+        console.log(`[UploadQueue] Cloudinary response status for "${item.name}": ${xhr.status}`);
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             const result = JSON.parse(xhr.responseText);
+            console.log("Upload Result:", result);
+            console.log(`[UploadQueue] Upload response parsing successful for "${item.name}". Metadata details:`, {
+              secureUrl: result.secure_url,
+              publicId: result.public_id
+            });
 
             // 4. Save metadata to Firestore
+            console.log(`[UploadQueue] Saving metadata to Firestore for "${item.name}"...`);
             const photoId = await createPhoto.mutateAsync({
               roomId,
               photographerId,
@@ -144,6 +154,7 @@ export function UploadQueue({ files, roomId, onClear, onUploadComplete }: Upload
               exif,
               tags: result.tags || [],
             });
+            console.log(`[UploadQueue] Successfully created Firestore document. photoId: "${photoId}"`);
 
             // Trigger background face recognition analysis on the AI service (fire-and-forget)
             fetch("/api/gallery/process-photo", {
@@ -151,16 +162,16 @@ export function UploadQueue({ files, roomId, onClear, onUploadComplete }: Upload
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ photoId, roomId }),
             }).catch((apiErr) => {
-              console.error("AI face registration processing failed:", apiErr);
+              console.error("[UploadQueue] AI face registration processing failed:", apiErr);
             });
 
             updateItemStatus(item.id, "success", 100);
           } catch (dbErr: any) {
-            console.error("Firestore save error:", dbErr);
+            console.error("[UploadQueue] Firestore save error:", dbErr);
             updateItemStatus(item.id, "failed", 100, dbErr.message || "Failed to save photo doc");
           }
         } else {
-          console.error(`[Cloudinary Queue Upload Failed] HTTP Status: ${xhr.status}. Complete Response:`, xhr.responseText);
+          console.error(`[UploadQueue] Cloudinary upload failed. HTTP Status: ${xhr.status}. Complete Response:`, xhr.responseText);
           updateItemStatus(item.id, "failed", 100, `Cloudinary HTTP Error ${xhr.status}`);
         }
         setActiveUploads((prev) => Math.max(0, prev - 1));
@@ -168,12 +179,14 @@ export function UploadQueue({ files, roomId, onClear, onUploadComplete }: Upload
 
       // Error listener
       xhr.onerror = () => {
+        console.error(`[UploadQueue] Network connection issue encountered during upload for "${item.name}".`);
         updateItemStatus(item.id, "failed", 100, "Network connection issue");
         setActiveUploads((prev) => Math.max(0, prev - 1));
       };
 
       // Abort listener
       xhr.onabort = () => {
+        console.warn(`[UploadQueue] Upload execution aborted by user for "${item.name}".`);
         updateItemStatus(item.id, "cancelled", 0, "Upload cancelled by user");
         setActiveUploads((prev) => Math.max(0, prev - 1));
       };
@@ -187,7 +200,7 @@ export function UploadQueue({ files, roomId, onClear, onUploadComplete }: Upload
       xhr.send(formData);
       setActiveUploads((prev) => prev + 1);
     } catch (err: any) {
-      console.error("Upload handler error:", err);
+      console.error("[UploadQueue] Fatal exception caught in upload handler:", err);
       updateItemStatus(item.id, "failed", 0, err.message || "Failed to upload file");
       setActiveUploads((prev) => Math.max(0, prev - 1));
     }

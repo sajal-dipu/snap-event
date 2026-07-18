@@ -56,6 +56,8 @@ export function useCreatePhotoMutation() {
   return useMutation({
     mutationFn: (data: NewPhotoInput) => photoManagementService.create(data),
     onSuccess: async (_, variables) => {
+      await queryClient.invalidateQueries({ queryKey: ["gallery-photos"] });
+      await queryClient.refetchQueries({ queryKey: ["gallery-photos"] });
       await queryClient.invalidateQueries({ queryKey: ["gallery-photos", variables.roomId] });
       await queryClient.refetchQueries({ queryKey: ["gallery-photos", variables.roomId] });
       await queryClient.invalidateQueries({ queryKey: ["virtual-rooms"] });

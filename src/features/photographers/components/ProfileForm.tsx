@@ -25,6 +25,9 @@ import {
 } from "lucide-react";
 import { PhotographerSchema } from "@/lib/validation/schemas";
 import { photographerService } from "@/services/PhotographerService";
+import { db } from "@/lib/firebase/firestore";
+import { doc, deleteDoc, setDoc } from "firebase/firestore";
+import { toast } from "sonner";
 import { Input } from "@/components/ui/Input";
 import { Textarea } from "@/components/ui/Textarea";
 import { Button } from "@/components/ui/Button";
@@ -81,6 +84,44 @@ const LANGUAGES = ["English", "Hindi", "Bengali", "Odia", "Punjabi", "Tamil", "T
 
 const DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
+function extractPublicId(url: string): string | null {
+  try {
+    const uploadIndex = url.indexOf("/upload/");
+    if (uploadIndex === -1) return null;
+    
+    const path = url.substring(uploadIndex + 8);
+    const segments = path.split("/");
+    const firstNonTransformIndex = segments.findIndex(seg => seg.match(/^v\d+$/));
+    
+    let publicIdPath = "";
+    if (firstNonTransformIndex !== -1) {
+      publicIdPath = segments.slice(firstNonTransformIndex + 1).join("/");
+    } else {
+      const snapEventIndex = path.indexOf("snapevent/");
+      if (snapEventIndex !== -1) {
+        publicIdPath = path.substring(snapEventIndex);
+      } else {
+        const filteredSegments = segments.filter(
+          seg => !seg.includes(",") && !seg.startsWith("c_") && !seg.startsWith("w_") && !seg.startsWith("h_")
+        );
+        if (filteredSegments[0]?.match(/^v\d+$/)) {
+          filteredSegments.shift();
+        }
+        publicIdPath = filteredSegments.join("/");
+      }
+    }
+    
+    const dotIndex = publicIdPath.lastIndexOf(".");
+    if (dotIndex !== -1) {
+      publicIdPath = publicIdPath.substring(0, dotIndex);
+    }
+    return decodeURIComponent(publicIdPath);
+  } catch (error) {
+    console.error("Failed to extract publicId:", error);
+    return null;
+  }
+}
+
 interface ProfileFormProps {
   initialData: any;
   uid: string;
@@ -100,6 +141,7 @@ export function ProfileForm({ initialData, uid, onProfileUpdated }: ProfileFormP
 
   // New unavailable date input
   const [newBlockedDate, setNewBlockedDate] = useState("");
+  const [confirmDeleteIndex, setConfirmDeleteIndex] = useState<number | null>(null);
 
   const {
     register,
@@ -173,6 +215,53 @@ export function ProfileForm({ initialData, uid, onProfileUpdated }: ProfileFormP
     control,
     name: "pricingPackages"
   });
+
+  React.useEffect(() => {
+    if (!watchedPortfolio || watchedPortfolio.length === 0) return;
+
+    const migrateMissing = async () => {
+      let needsMigration = false;
+      const migrated = await Promise.all(
+        watchedPortfolio.map(async (item: any) => {
+          if (!item.publicId) {
+            const url = item.secureUrl || item.imageUrl || "";
+            const extracted = extractPublicId(url);
+            if (extracted) {
+              needsMigration = true;
+              console.log(`Migrating ProfileForm portfolio photo - extracted publicId:`, extracted);
+              
+              const photoId = item.id || extracted.replace(/\//g, "_");
+              try {
+                // Update in Firestore subcollection photographers/{uid}/portfolio/{photoId}
+                const docRef = doc(db, "photographers", uid, "portfolio", photoId);
+                await setDoc(docRef, { ...item, publicId: extracted, id: photoId }, { merge: true });
+              } catch (e) {
+                console.error("Failed to migrate portfolio photo subcollection:", e);
+              }
+              
+              return { ...item, publicId: extracted, id: photoId };
+            }
+          }
+          return item;
+        })
+      );
+
+      if (needsMigration) {
+        setValue("portfolioImages", migrated, { shouldValidate: true });
+        
+        try {
+          await photographerService.updateProfile(uid, {
+            portfolioImages: migrated,
+            portfolio: migrated
+          });
+        } catch (e) {
+          console.error("Failed to update profile for migration:", e);
+        }
+      }
+    };
+
+    migrateMissing();
+  }, [watchedPortfolio, uid, setValue]);
 
   const handleSingleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>, fieldName: "profileImage" | "coverImage" | "logo") => {
     const file = e.target.files?.[0];
@@ -277,6 +366,8 @@ export function ProfileForm({ initialData, uid, onProfileUpdated }: ProfileFormP
         newImages.push({
           publicId: data.public_id,
           secureUrl: data.secure_url,
+          thumbnailUrl: data.secure_url.replace("/upload/", "/upload/c_thumb,w_250,h_250,g_face,q_auto,f_auto/"),
+          uploadedAt: new Date().toISOString(),
           category: "General",
           isFeatured: false
         });
@@ -344,8 +435,109 @@ export function ProfileForm({ initialData, uid, onProfileUpdated }: ProfileFormP
   };
 
   const handlePortfolioDelete = (index: number) => {
-    const updated = watchedPortfolio.filter((_, idx) => idx !== index);
-    setValue("portfolioImages", updated, { shouldValidate: true });
+    setConfirmDeleteIndex(index);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (confirmDeleteIndex === null) return;
+    
+    // Prevent deleting the last required portfolio image
+    if (watchedPortfolio.length <= 1) {
+      toast.warning("Cannot delete the last photo. At least one portfolio image is required.");
+      setConfirmDeleteIndex(null);
+      return;
+    }
+
+    const targetImg = watchedPortfolio[confirmDeleteIndex];
+    if (!targetImg) {
+      setConfirmDeleteIndex(null);
+      return;
+    }
+
+    let publicId = targetImg.publicId;
+    const secureUrl = targetImg.secureUrl || "";
+
+    // STEP 4: Legacy Photo Support
+    if (!publicId) {
+      publicId = extractPublicId(secureUrl) || "";
+    }
+
+    console.log("Deleting publicId:", publicId);
+
+    const loadingToastId = toast.loading("Deleting photo...");
+    try {
+      let isCloudinaryDeleted = false;
+
+      if (publicId) {
+        // STEP 5: Delete Cloudinary asset first via server API DELETE /api/cloudinary/delete
+        const res = await fetch("/api/cloudinary/delete", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ publicId, secureUrl })
+        });
+        
+        const resData = await res.json();
+        
+        // STEP 7: Detailed Logging
+        console.log("Cloudinary Delete Result:", resData);
+
+        if (res.ok) {
+          isCloudinaryDeleted = true;
+        } else if (res.status === 403) {
+          // STEP 10: 403 Debugging
+          console.warn("Cloudinary returned 403 (Credentials Error). We will clear this from Firestore anyway to prevent it from reappearing.");
+          toast.warning("Cloudinary credentials returned 403 Forbidden. Removed from database only.");
+          isCloudinaryDeleted = true; // treat as success for database/state deletion flow
+        } else {
+          throw new Error(resData.error || "Failed to remove image from Cloudinary.");
+        }
+      } else {
+        // Extraction failed
+        console.warn("Cloudinary publicId missing and extraction failed. Deleting Firestore document only.");
+        toast.warning("Cloudinary asset could not be found. Removed from database.");
+        isCloudinaryDeleted = true;
+      }
+
+      if (isCloudinaryDeleted) {
+        // STEP 5: 2. Remove Firestore document
+        const photoId = (targetImg as any).id || targetImg.publicId || (publicId ? publicId.replace(/\//g, "_") : null);
+        let firestoreDeleted = false;
+        if (photoId) {
+          try {
+            await deleteDoc(doc(db, "photographers", uid, "portfolio", photoId));
+            firestoreDeleted = true;
+          } catch (fsErr) {
+            console.error("Failed to delete Firestore subcollection doc:", fsErr);
+          }
+        }
+
+        // STEP 5: 3. Update main profile doc & local UI state
+        const updated = watchedPortfolio.filter((_, idx) => idx !== confirmDeleteIndex);
+        setValue("portfolioImages", updated, { shouldValidate: true });
+
+        const mainDocResult = await photographerService.updateProfile(uid, {
+          portfolioImages: updated,
+          portfolio: updated
+        });
+
+        // STEP 7: Detailed Logging
+        console.log("Deletion completed:", {
+          publicId,
+          secureUrl,
+          cloudinaryDeleted: isCloudinaryDeleted,
+          firestoreDeleted: firestoreDeleted,
+          mainDocUpdated: true
+        });
+
+        toast.success("Photo deleted successfully.");
+      }
+    } catch (err: any) {
+      console.error("Deletion failed:", err);
+      toast.error(err.message || "Failed to remove photo. Please try again.");
+    } finally {
+      toast.dismiss(loadingToastId);
+      setConfirmDeleteIndex(null);
+    }
   };
 
   const handlePortfolioCategoryChange = (index: number, category: string) => {
@@ -385,7 +577,8 @@ export function ProfileForm({ initialData, uid, onProfileUpdated }: ProfileFormP
   };
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-8">
+    <>
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-8">
       {/* Tabs Selector */}
       <div className="flex border-b border-border overflow-x-auto no-scrollbar scroll-smooth">
         {[
@@ -952,6 +1145,15 @@ export function ProfileForm({ initialData, uid, onProfileUpdated }: ProfileFormP
                           </span>
                         )}
 
+                        {/* Mobile delete button always visible in top-right */}
+                        <button
+                          type="button"
+                          onClick={() => handlePortfolioDelete(idx)}
+                          className="absolute top-2 right-2 z-20 md:hidden bg-red-600 text-white p-1 rounded-lg shadow-sm"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+
                         {/* Top action overlays */}
                         <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button
@@ -1056,6 +1258,31 @@ export function ProfileForm({ initialData, uid, onProfileUpdated }: ProfileFormP
         </div>
       </div>
     </form>
+
+      {/* Delete Portfolio Photo Confirmation Modal */}
+      {confirmDeleteIndex !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-card border border-border rounded-3xl p-6 shadow-2xl space-y-4">
+            <h3 className="text-base font-bold text-foreground">Delete Photo?</h3>
+            <p className="text-xs text-muted-foreground leading-normal">This photo will be permanently removed from your portfolio.</p>
+
+            <div className="flex gap-2.5 justify-end pt-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => setConfirmDeleteIndex(null)} className="text-xs h-8.5 rounded-xl">
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleConfirmDelete}
+                className="text-xs h-8.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold"
+              >
+                Delete
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 export default ProfileForm;

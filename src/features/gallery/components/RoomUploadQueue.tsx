@@ -16,7 +16,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { extractExif } from "@/utils/exif";
 import { useCreatePhotoMutation } from "../hooks/useGallery";
 import { db } from "@/lib/firebase/firestore";
-import { doc, setDoc, serverTimestamp, onSnapshot } from "firebase/firestore";
+import { doc, setDoc, serverTimestamp, onSnapshot, collection, query, where, getDocs } from "firebase/firestore";
 import { useQueryClient } from "@tanstack/react-query";
 
 export interface QueueItem {
@@ -31,6 +31,20 @@ export interface QueueItem {
   previewUrl?: string;
   photoId?: string;
   aiStatus?: "processing" | "ready" | "failed";
+}
+
+async function computeFileHash(file: File): Promise<string> {
+  if (typeof window !== "undefined" && window.crypto && window.crypto.subtle) {
+    try {
+      const buffer = await file.slice(0, 1024 * 1024).arrayBuffer();
+      const hashBuffer = await window.crypto.subtle.digest("SHA-256", buffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (e) {
+      console.warn("Subtle crypto hash failed, using fallback hash:", e);
+    }
+  }
+  return `${file.name}-${file.size}-${file.lastModified}`;
 }
 
 interface RoomUploadQueueProps {
@@ -51,11 +65,19 @@ export function RoomUploadQueue({ files, roomId, onClear, onUploadComplete }: Ro
 
   // A ref to keep track of firestore unsubscribe functions
   const unsubscribes = React.useRef<Record<string, () => void>>({});
+  const previewUrlsRef = React.useRef<string[]>([]);
 
-  // Clean up listeners on unmount
+  // Clean up listeners and object URLs on unmount
   React.useEffect(() => {
     return () => {
       Object.values(unsubscribes.current).forEach((unsub) => unsub());
+      previewUrlsRef.current.forEach((url) => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (e) {
+          console.warn("Failed to revoke object URL:", e);
+        }
+      });
     };
   }, []);
 
@@ -91,10 +113,37 @@ export function RoomUploadQueue({ files, roomId, onClear, onUploadComplete }: Ro
   // Unsigned upload to Cloudinary & Metadata write to both root collection and subcollection
   const uploadFile = React.useCallback(async (item: QueueItem) => {
     updateItemStatus(item.id, "uploading", 0);
+    console.log("Uploading:", item.file.name);
 
     try {
       const photographerId = user?.uid;
       if (!photographerId) throw new Error("Unauthenticated user profile");
+
+      // Prevent duplicate upload by checking original filename or file hash in Firestore before calling Cloudinary
+      const fileHash = await computeFileHash(item.file);
+      const qDup = query(
+        collection(db, "photos"),
+        where("roomId", "==", roomId),
+        where("fileName", "==", item.name),
+        where("isDeleted", "==", false)
+      );
+      const qHash = query(
+        collection(db, "photos"),
+        where("roomId", "==", roomId),
+        where("fileHash", "==", fileHash),
+        where("isDeleted", "==", false)
+      );
+
+      const [dupSnaps, hashSnaps] = await Promise.all([
+        getDocs(qDup),
+        getDocs(qHash)
+      ]);
+
+      if (!dupSnaps.empty || !hashSnaps.empty) {
+        console.log(`[RoomUploadQueue] Photo ${item.name} already uploaded. Skipping.`);
+        updateItemStatus(item.id, "success", 100);
+        return;
+      }
 
       let exif = null;
       try {
@@ -117,6 +166,9 @@ export function RoomUploadQueue({ files, roomId, onClear, onUploadComplete }: Ro
       formData.append("upload_preset", uploadPreset);
       formData.append("folder", folderPath);
 
+      console.log(`[RoomUploadQueue] Starting client-side Cloudinary upload for: "${item.name}"`);
+      console.log(`- Preset: "${uploadPreset}", Cloud: "${cloudName}", Folder: "${folderPath}"`);
+
       xhr.open("POST", `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, true);
 
       xhr.upload.onprogress = (e) => {
@@ -127,10 +179,29 @@ export function RoomUploadQueue({ files, roomId, onClear, onUploadComplete }: Ro
       };
 
       xhr.onload = async () => {
+        console.log(`[RoomUploadQueue] Cloudinary response status for "${item.name}": ${xhr.status}`);
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             const result = JSON.parse(xhr.responseText);
+            console.log("Upload Result:", result);
+            console.log(`[RoomUploadQueue] Upload response parsing successful for "${item.name}". Metadata details:`, {
+              secureUrl: result.secure_url,
+              publicId: result.public_id
+            });
 
+            // Double check duplicate by publicId before writing Firestore doc
+            const qPublicId = query(
+              collection(db, "photos"),
+              where("publicId", "==", result.public_id)
+            );
+            const publicIdSnaps = await getDocs(qPublicId);
+            if (!publicIdSnaps.empty) {
+              console.log("[RoomUploadQueue] Creating Firestore doc skipped - already exists:", result.public_id);
+              updateItemStatus(item.id, "success", 100);
+              return;
+            }
+
+            console.log(`[RoomUploadQueue] Saving metadata to Firestore for "${item.name}"...`);
             // 1. Save metadata to root collection
             const photoId = await createPhoto.mutateAsync({
               roomId,
@@ -148,10 +219,13 @@ export function RoomUploadQueue({ files, roomId, onClear, onUploadComplete }: Ro
               albumId: null,
               exif,
               tags: result.tags || [],
+              fileHash,
             });
+            console.log(`[RoomUploadQueue] Successfully created Firestore document in root collection. photoId: "${photoId}"`);
 
             // 2. Save metadata to PART 3 subcollection: photographers/{photographerId}/rooms/{roomId}/photos
             try {
+              console.log(`[RoomUploadQueue] Saving nested subcollection metadata for photoId: "${photoId}"...`);
               const subPhotoRef = doc(db, "photographers", photographerId, "rooms", roomId, "photos", photoId);
               await setDoc(subPhotoRef, {
                 photoId: photoId,
@@ -168,8 +242,9 @@ export function RoomUploadQueue({ files, roomId, onClear, onUploadComplete }: Ro
                 downloadCount: 0,
                 createdAt: serverTimestamp(),
               });
+              console.log(`[RoomUploadQueue] Nested subcollection metadata write successful.`);
             } catch (subErr) {
-              console.warn("Subcollection write blocked (this is expected if Firestore rules match nested collection is restricted):", subErr);
+              console.warn("[RoomUploadQueue] Subcollection write blocked (this is expected if Firestore rules match nested collection is restricted):", subErr);
             }
 
             // Set state to processing_ai and store photoId
@@ -182,11 +257,13 @@ export function RoomUploadQueue({ files, roomId, onClear, onUploadComplete }: Ro
             );
 
             // Subscribe to real-time updates on this photo doc
+            console.log(`[RoomUploadQueue] Subscribing to real-time updates for AI processing status of photoId: "${photoId}"`);
             const docRef = doc(db, "photos", photoId);
             const unsubscribe = onSnapshot(docRef, (docSnap) => {
               if (docSnap.exists()) {
                 const data = docSnap.data();
                 if (data.isProcessed) {
+                  console.log(`[RoomUploadQueue] AI Processing complete for photoId: "${photoId}"`);
                   // AI Finished!
                   setQueue((prev) =>
                     prev.map((i) =>
@@ -204,6 +281,7 @@ export function RoomUploadQueue({ files, roomId, onClear, onUploadComplete }: Ro
                     delete unsubscribes.current[item.id];
                   }
                 } else if (data.status === "failed") {
+                  console.error(`[RoomUploadQueue] AI Processing failed for photoId: "${photoId}". Error:`, data.processingError);
                   // AI Failed
                   setQueue((prev) =>
                     prev.map((i) =>
@@ -229,24 +307,27 @@ export function RoomUploadQueue({ files, roomId, onClear, onUploadComplete }: Ro
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ photoId, roomId }),
             }).catch((apiErr) => {
-              console.error("AI trigger failed:", apiErr);
+              console.error("[RoomUploadQueue] AI trigger failed:", apiErr);
             });
           } catch (dbErr: any) {
-            console.error("Firestore save error:", dbErr);
+            console.error("[RoomUploadQueue] Firestore save error:", dbErr);
             updateItemStatus(item.id, "failed", 100, dbErr.message || "Failed to save photo doc");
           }
         } else {
+          console.error(`[RoomUploadQueue] Cloudinary upload failed. HTTP Status: ${xhr.status}. Response:`, xhr.responseText);
           updateItemStatus(item.id, "failed", 100, `Cloudinary HTTP Error ${xhr.status}`);
         }
         setActiveUploads((prev) => Math.max(0, prev - 1));
       };
 
       xhr.onerror = () => {
+        console.error(`[RoomUploadQueue] Network connection issue encountered during upload for "${item.name}".`);
         updateItemStatus(item.id, "failed", 100, "Network connection issue");
         setActiveUploads((prev) => Math.max(0, prev - 1));
       };
 
       xhr.onabort = () => {
+        console.warn(`[RoomUploadQueue] Upload execution aborted by user for "${item.name}".`);
         updateItemStatus(item.id, "cancelled", 0, "Upload cancelled");
         setActiveUploads((prev) => Math.max(0, prev - 1));
       };
@@ -258,7 +339,7 @@ export function RoomUploadQueue({ files, roomId, onClear, onUploadComplete }: Ro
       xhr.send(formData);
       setActiveUploads((prev) => prev + 1);
     } catch (err: any) {
-      console.error("Upload handler error:", err);
+      console.error("[RoomUploadQueue] Fatal exception caught in upload handler:", err);
       updateItemStatus(item.id, "failed", 0, err.message || "Failed to upload file");
       setActiveUploads((prev) => Math.max(0, prev - 1));
     }
@@ -271,24 +352,32 @@ export function RoomUploadQueue({ files, roomId, onClear, onUploadComplete }: Ro
       return;
     }
 
-    const initialQueue: QueueItem[] = files.map((file, idx) => ({
-      id: `${file.name}-${idx}-${Date.now()}`,
-      file,
-      name: file.name,
-      size: file.size,
-      status: "idle",
-      progress: 0,
-      xhr: null,
-      previewUrl: URL.createObjectURL(file),
-    }));
+    setQueue((prevQueue) => {
+      const newFiles = files.filter(
+        (file) => !prevQueue.some((item) => item.name === file.name && item.size === file.size)
+      );
 
-    setQueue(initialQueue);
+      if (newFiles.length === 0) {
+        return prevQueue;
+      }
 
-    return () => {
-      initialQueue.forEach((item) => {
-        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      const newQueueItems: QueueItem[] = newFiles.map((file, idx) => {
+        const previewUrl = URL.createObjectURL(file);
+        previewUrlsRef.current.push(previewUrl);
+        return {
+          id: `${file.name}-${idx}-${Date.now()}`,
+          file,
+          name: file.name,
+          size: file.size,
+          status: "idle",
+          progress: 0,
+          xhr: null,
+          previewUrl,
+        };
       });
-    };
+
+      return [...prevQueue, ...newQueueItems];
+    });
   }, [files]);
 
   // Queue orchestrator hook

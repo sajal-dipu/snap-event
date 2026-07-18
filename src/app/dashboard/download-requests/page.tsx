@@ -13,6 +13,8 @@ import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { Modal } from "@/components/ui/Modal";
 import { Card, CardContent } from "@/components/ui/Card";
 import { toast } from "sonner";
+import { APP_URL } from "@/utils/helpers";
+
 import {
   Check,
   X,
@@ -328,7 +330,7 @@ export default function DownloadRequestsPage() {
   const handleCopyLink = async (token?: string) => {
     if (!token) return;
     try {
-      const secureLink = `${window.location.origin}/download/${token}`;
+      const secureLink = `${APP_URL}/download/${token}`;
       await navigator.clipboard.writeText(secureLink);
       toast.success("Secure download link copied to clipboard!");
     } catch (err) {

@@ -3,6 +3,7 @@
 import * as React from "react";
 import { QRCodeCard } from "@/features/rooms/components/QRCodeCard";
 import type { VirtualRoom } from "@/types";
+import { APP_URL } from "@/utils/helpers";
 
 export interface QRTabProps {
   room: VirtualRoom;
@@ -17,7 +18,7 @@ export function QRTab({ room, roomId }: QRTabProps) {
       <QRCodeCard
         roomId={roomId}
         roomName={room.name}
-        qrCodeUrl={room.qrCode?.url || ""}
+        qrCodeUrl={`${APP_URL}/event/${roomId}`}
       />
 
     </div>

@@ -21,6 +21,8 @@ export const CloudinaryAssetSchema = z.object({
   version: z.number().int().positive().optional(),
   category: z.string().optional(),
   isFeatured: z.boolean().optional(),
+  thumbnailUrl: z.string().optional(),
+  uploadedAt: z.string().optional(),
 });
 
 export const GeoPointSchema = z.object({

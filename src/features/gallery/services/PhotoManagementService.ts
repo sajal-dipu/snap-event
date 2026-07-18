@@ -51,6 +51,7 @@ export interface NewPhotoInput {
   albumId?: string | null;
   exif?: PhotoExif | null;
   tags?: string[];
+  fileHash?: string;
 }
 
 export class PhotoManagementService {
@@ -62,7 +63,18 @@ export class PhotoManagementService {
    */
   public async create(data: NewPhotoInput): Promise<string> {
     try {
+      console.log("Creating Firestore doc:", data.cloudinaryPublicId);
       logger.info(`Creating photo metadata record for file: ${data.fileName} in room ${data.roomId}`);
+
+      const existingQuery = query(
+        collection(db, this.collectionName),
+        where("publicId", "==", data.cloudinaryPublicId)
+      );
+      const existingSnaps = await getDocs(existingQuery);
+      if (!existingSnaps.empty) {
+        logger.info(`[PhotoManagementService.create] Photo with publicId ${data.cloudinaryPublicId} already exists. Skipping document creation.`);
+        return existingSnaps.docs[0].id;
+      }
 
       const photoRef = doc(collection(db, this.collectionName));
       const photoId = photoRef.id;
@@ -72,6 +84,8 @@ export class PhotoManagementService {
         imageId: photoId,
         photographerId: data.photographerId,
         roomId: data.roomId,
+        publicId: data.cloudinaryPublicId,
+        fileHash: data.fileHash || "",
         cloudinaryPublicId: data.cloudinaryPublicId,
         secureUrl: data.secureUrl,
         url: data.secureUrl,
@@ -120,6 +134,7 @@ export class PhotoManagementService {
       const batch = writeBatch(db);
       logger.info(`[PhotoManagementService.create] Writing photo doc. photoId: ${photoId}, roomId: ${data.roomId}, status: processing, isDeleted: false, caller: PhotoManagementService.create`);
       batch.set(photoRef, photoDoc);
+      console.log("Saved Photo:", photoDoc);
 
       // Increment room photo count safely
       const roomRef = doc(db, "photographers", data.photographerId, "rooms", data.roomId);
@@ -198,74 +213,84 @@ export class PhotoManagementService {
     } = {},
     pageSize = 30,
     lastDocSnapshot?: QueryDocumentSnapshot<DocumentData>
-  ): Promise<{ data: any[]; hasMore: boolean; lastDoc?: QueryDocumentSnapshot<DocumentData> }> {
+  ): Promise<{ data: any[]; hasMore: boolean; lastDoc?: any }> {
     try {
+      console.log(`[PhotoManagementService.queryPhotos] Fetching photos. roomId: "${roomId}", filters:`, filters);
       const constraints: Parameters<typeof query>[1][] = [
         where("roomId", "==", roomId),
         where("isDeleted", "==", false),
       ];
 
-      // Favorite filter
-      if (filters.favorite) {
-        constraints.push(where("favorite", "==", true));
-      }
-
-      // Album filter
-      if (filters.albumId === "unassigned") {
-        constraints.push(where("albumId", "==", null));
-      } else if (filters.albumId && filters.albumId !== "all") {
-        constraints.push(where("albumId", "==", filters.albumId));
-      }
-
-      // Sorting
-      const sortBy = filters.sortBy || "newest";
-      if (sortBy === "newest") {
-        constraints.push(orderBy("createdAt", "desc"));
-      } else if (sortBy === "oldest") {
-        constraints.push(orderBy("createdAt", "asc"));
-      } else if (sortBy === "largest") {
-        constraints.push(orderBy("fileSize", "desc"));
-      } else if (sortBy === "smallest") {
-        constraints.push(orderBy("fileSize", "asc"));
-      } else if (sortBy === "most_viewed") {
-        constraints.push(orderBy("viewCount", "desc"));
-      } else if (sortBy === "most_downloaded") {
-        constraints.push(orderBy("downloadCount", "desc"));
-      } else if (sortBy === "filename") {
-        // No orderBy on Firestore for filename to avoid missing index errors
-      }
-
-      constraints.push(limit(pageSize + 1));
-      if (lastDocSnapshot) {
-        constraints.push(startAfter(lastDocSnapshot));
-      }
-
       const q = query(collection(db, this.collectionName), ...constraints);
       const snaps = await getDocs(q);
+      console.log(`[PhotoManagementService.queryPhotos] Firestore query completed. Found ${snaps.size} photos before filters.`);
 
-      const hasMore = snaps.docs.length > pageSize;
-      const docs = hasMore ? snaps.docs.slice(0, pageSize) : snaps.docs;
+      let result: any[] = snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-      let result: any[] = docs.map((d) => ({ id: d.id, ...d.data() }));
-
-      if (sortBy === "filename") {
-        result.sort((a, b) => (a.fileName || "").localeCompare(b.fileName || ""));
+      // 1. Favorite filter
+      if (filters.favorite) {
+        result = result.filter((p) => p.favorite === true);
       }
 
-      // Client-side text search (filtering by file name, tags, or category)
+      // 2. Album filter
+      if (filters.albumId === "unassigned") {
+        result = result.filter((p) => p.albumId === null || p.albumId === undefined);
+      } else if (filters.albumId && filters.albumId !== "all") {
+        result = result.filter((p) => p.albumId === filters.albumId);
+      }
+
+      // 3. Client-side text search (filtering by file name, tags, or category)
       if (filters.search) {
         const term = filters.search.toLowerCase().trim();
         result = result.filter(
           (p) =>
-            p.fileName.toLowerCase().includes(term) ||
+            (p.fileName || "").toLowerCase().includes(term) ||
             p.tags?.some((t: string) => t.toLowerCase().includes(term))
         );
       }
 
-      const lastDoc = docs.length > 0 ? docs[docs.length - 1] : undefined;
+      // 4. Sorting
+      const sortBy = filters.sortBy || "newest";
+      result.sort((a: any, b: any) => {
+        if (sortBy === "newest" || sortBy === "oldest") {
+          const valA = a.createdAt?.toMillis ? a.createdAt.toMillis() : new Date(a.createdAt || 0).getTime();
+          const valB = b.createdAt?.toMillis ? b.createdAt.toMillis() : new Date(b.createdAt || 0).getTime();
+          return sortBy === "newest" ? valB - valA : valA - valB;
+        } else if (sortBy === "largest" || sortBy === "smallest") {
+          const sizeA = a.fileSize || a.size || 0;
+          const sizeB = b.fileSize || b.size || 0;
+          return sortBy === "largest" ? sizeB - sizeA : sizeA - sizeB;
+        } else if (sortBy === "most_viewed") {
+          return (b.viewCount || 0) - (a.viewCount || 0);
+        } else if (sortBy === "most_downloaded") {
+          return (b.downloadCount || 0) - (a.downloadCount || 0);
+        } else if (sortBy === "filename") {
+          return (a.fileName || "").localeCompare(b.fileName || "");
+        }
+        return 0;
+      });
+
+      // 5. Pagination
+      let startIndex = 0;
+      if (lastDocSnapshot) {
+        if (typeof lastDocSnapshot === "number") {
+          startIndex = lastDocSnapshot;
+        } else {
+          const idToFind = (lastDocSnapshot as any).id;
+          const foundIdx = result.findIndex((item) => item.id === idToFind);
+          if (foundIdx !== -1) {
+            startIndex = foundIdx + 1;
+          }
+        }
+      }
+
+      const nextIndex = startIndex + pageSize;
+      const hasMore = nextIndex < result.length;
+      const paginatedData = result.slice(startIndex, nextIndex);
+      const lastDoc = hasMore ? nextIndex : undefined;
 
       return {
-        data: result,
+        data: paginatedData,
         hasMore,
         lastDoc,
       };

@@ -90,6 +90,8 @@ export interface CloudinaryAsset {
   version?: number;
   category?: string;         // Optional category for portfolio grouping
   isFeatured?: boolean;      // Featured portfolio status
+  thumbnailUrl?: string;     // Thumbnail image URL
+  uploadedAt?: string;       // ISO upload date string
 }
 
 /** GPS coordinates for event location */
@@ -373,6 +375,8 @@ export interface VirtualRoom {
   passwordHash?: string;
   passwordCreatedAt?: Timestamp;
   passwordVersion?: number;
+  securityCode?: string;
+
 
   // Settings
   allowGuestUpload: boolean;

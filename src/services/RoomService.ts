@@ -22,7 +22,10 @@ import {
 import { handleFirebaseError } from "@/lib/errors/handlers";
 import { logger } from "@/utils/logger";
 import type { VirtualRoom, RoomStatus } from "@/types";
-import { generateStrongPassword, hashPassword } from "@/utils/crypto";
+import { generateStrongPassword, hashPassword, generateSecurityCode } from "@/utils/crypto";
+import { APP_URL } from "@/utils/helpers";
+
+
 
 export class RoomService {
   private readonly subCollection = "rooms";
@@ -86,6 +89,7 @@ export class RoomService {
       visibility: "public" | "private";
       coverImage?: string;
       id?: string;
+      securityCode?: string;
     },
     cleartextPassword: string
   ): Promise<string> {
@@ -105,8 +109,7 @@ export class RoomService {
       const pwHash = await hashPassword(cleartextPassword);
 
       // 3. Build QR code metadata
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://snapevent.com";
-      const roomUrl = `${appUrl}/event/${roomId}`;
+      const roomUrl = `${APP_URL}/event/${roomId}`;
       const qrCode = {
         code: roomId.substring(0, 8).toUpperCase(),
         url: roomUrl,
@@ -137,6 +140,8 @@ export class RoomService {
         passwordHash: pwHash,
         passwordCreatedAt: Timestamp.now(),
         passwordVersion: 1,
+        securityCode: data.securityCode || "",
+
         allowGuestUpload: data.allowGuestAccess,
         allowGuestAccess: data.allowGuestAccess,
         requireFaceVerification: data.requireFaceVerification,
@@ -345,7 +350,7 @@ export class RoomService {
   /**
    * Duplicate room configuration with a new secure password.
    */
-  public async duplicateRoom(roomId: string): Promise<{ id: string; password: string }> {
+  public async duplicateRoom(roomId: string): Promise<{ id: string; password: string; securityCode: string }> {
     try {
       const originalRoom = await this.getById(roomId);
       if (!originalRoom) throw new Error("Original room not found");
@@ -365,8 +370,7 @@ export class RoomService {
       if (!snaps.empty) {
         throw new Error("Could not generate a unique Room ID for duplicate. Please try again.");
       }
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://snapevent.com";
-      const roomUrl = `${appUrl}/event/${newRoomId}`;
+      const roomUrl = `${APP_URL}/event/${newRoomId}`;
 
       const qrCode = {
         code: newRoomId.substring(0, 8).toUpperCase(),
@@ -375,6 +379,8 @@ export class RoomService {
         publicId: "",
         generatedAt: Timestamp.now(),
       };
+
+      const newSecurityCode = generateSecurityCode();
 
       await setDoc(roomRef, {
         id: newRoomId,
@@ -390,6 +396,7 @@ export class RoomService {
         passwordHash: pwHash,
         passwordCreatedAt: Timestamp.now(),
         passwordVersion: 1,
+        securityCode: newSecurityCode,
         allowGuestUpload: originalRoom.allowGuestUpload,
         allowGuestAccess: originalRoom.allowGuestAccess ?? true,
         requireFaceVerification: originalRoom.requireFaceVerification ?? false,
@@ -421,7 +428,7 @@ export class RoomService {
         updatedAt: Timestamp.now(),
       });
 
-      return { id: newRoomId, password: newPassword };
+      return { id: newRoomId, password: newPassword, securityCode: newSecurityCode };
     } catch (error) {
       logger.error(`Failed to duplicate room: ${roomId}`, error);
       throw handleFirebaseError(error);
@@ -429,22 +436,153 @@ export class RoomService {
   }
 
   /**
+   * Find a room by its security code and photographer ID.
+   */
+  public async recoverRoom(securityCode: string, photographerId: string): Promise<VirtualRoom | null> {
+    try {
+      const q = query(
+        collectionGroup(db, this.subCollection),
+        where("securityCode", "==", securityCode.trim().toUpperCase()),
+        where("photographerId", "==", photographerId),
+        limit(1)
+      );
+      const snaps = await getDocs(q);
+      if (snaps.empty) {
+        return null;
+      }
+      return this.mapDoc(snaps.docs[0]);
+    } catch (error) {
+      logger.error("Failed to recover room:", error);
+      throw handleFirebaseError(error);
+    }
+  }
+
+  /**
    * Delete virtual room from subcollection.
    */
-  public async deleteRoom(roomId: string, photographerId: string): Promise<void> {
+  public async deleteRoom(
+    roomId: string,
+    photographerId: string,
+    onProgress?: (stage: "photos" | "metadata" | "room" | "complete", details?: any) => void
+  ): Promise<{ failedCloudinaryCount: number }> {
     try {
-      const batch = writeBatch(db);
+      console.log("Deleting Room:", roomId);
+
+      // STEP 1: Fetch all photos belonging to that room in root collection
+      const photosQuery = query(
+        collection(db, "photos"),
+        where("roomId", "==", roomId)
+      );
+      const photosSnap = await getDocs(photosQuery);
+      const photos = photosSnap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() as any }));
+      console.log("Photos Found:", photos.length);
+
+      // STEP 2: Delete Cloudinary assets in a loop
+      let failedCloudinaryCount = 0;
+      onProgress?.("photos", { total: photos.length, current: 0 });
+
+      for (let i = 0; i < photos.length; i++) {
+        const photo = photos[i];
+        const publicId = photo.publicId || photo.cloudinaryPublicId || photo.asset?.publicId;
+        if (publicId) {
+          try {
+            let cleanPublicId = publicId;
+            const dotIndex = cleanPublicId.lastIndexOf(".");
+            if (dotIndex !== -1) {
+              cleanPublicId = cleanPublicId.substring(0, dotIndex);
+            }
+
+            const res = await fetch("/api/cloudinary/delete", {
+              method: "DELETE",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ publicId: cleanPublicId, secureUrl: photo.secureUrl || photo.url }),
+            });
+            if (res.ok) {
+              console.log("Deleted Cloudinary:", cleanPublicId);
+            } else {
+              console.error(`Failed to delete Cloudinary asset: ${cleanPublicId}`);
+              failedCloudinaryCount++;
+            }
+          } catch (err) {
+            console.error(`Error deleting Cloudinary asset: ${publicId}`, err);
+            failedCloudinaryCount++;
+          }
+        }
+        onProgress?.("photos", { total: photos.length, current: i + 1 });
+      }
+
+      onProgress?.("metadata");
+
+      // STEP 3 & 4: Fetch all other related Firestore metadata
+      // 1. Nested photos in subcollection
+      const subPhotosQuery = query(
+        collection(db, "photographers", photographerId, "rooms", roomId, "photos")
+      );
+      const subPhotosSnap = await getDocs(subPhotosQuery);
+
+      // 2. Guest mappings / download requests
+      const reqsQuery1 = query(collection(db, "download_requests"), where("roomId", "==", roomId));
+      const reqsQuery2 = query(collection(db, "downloadRequests"), where("roomId", "==", roomId));
+      
+      const [reqsSnap1, reqsSnap2] = await Promise.all([
+        getDocs(reqsQuery1),
+        getDocs(reqsQuery2),
+      ]);
+
+      // Collect all references to delete
+      const refsToDelete: any[] = [];
+      
+      // Root photos
+      photosSnap.docs.forEach((docSnap) => {
+        refsToDelete.push(docSnap.ref);
+        console.log("Deleted Metadata:", docSnap.id);
+      });
+
+      // Subcollection photos
+      subPhotosSnap.docs.forEach((docSnap) => {
+        refsToDelete.push(docSnap.ref);
+      });
+
+      // Download requests
+      reqsSnap1.docs.forEach((docSnap) => {
+        refsToDelete.push(docSnap.ref);
+      });
+      reqsSnap2.docs.forEach((docSnap) => {
+        refsToDelete.push(docSnap.ref);
+      });
+
+      // Deleting in batch groups of 400 to avoid Firestore limits
+      let batch = writeBatch(db);
+      let opCount = 0;
+
+      for (const ref of refsToDelete) {
+        batch.delete(ref);
+        opCount++;
+        if (opCount >= 400) {
+          await batch.commit();
+          batch = writeBatch(db);
+          opCount = 0;
+        }
+      }
+
+      // STEP 5: Delete room document and STEP 6: update photographer counts
+      onProgress?.("room");
+
       const roomRef = doc(db, "photographers", photographerId, this.subCollection, roomId);
       batch.delete(roomRef);
 
       const photographerRef = doc(db, "photographers", photographerId);
       batch.update(photographerRef, {
         totalRooms: increment(-1),
-        updatedAt: Timestamp.now(),
+        totalPhotosUploaded: increment(-photos.length),
+        updatedAt: serverTimestamp(),
       });
 
       await batch.commit();
-      logger.info(`Successfully deleted room: ${roomId}`);
+      logger.info(`Successfully deleted room ${roomId} and all related Firestore metadata.`);
+      onProgress?.("complete");
+
+      return { failedCloudinaryCount };
     } catch (error) {
       logger.error(`Failed to delete room: ${roomId}`, error);
       throw handleFirebaseError(error);
@@ -549,6 +687,8 @@ export class RoomService {
       passwordHash: d.passwordHash,
       passwordCreatedAt: d.passwordCreatedAt,
       passwordVersion: d.passwordVersion ?? 1,
+      securityCode: d.securityCode || "",
+
       allowGuestUpload: d.allowGuestUpload ?? false,
       requireApprovalForDownload: d.requireApprovalForDownload ?? true,
       watermarkPhotos: d.watermarkPhotos ?? true,

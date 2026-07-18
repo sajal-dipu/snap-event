@@ -40,6 +40,7 @@ export default function DashboardPage() {
 
   const [loading, setLoading] = React.useState(true);
   const [rooms, setRooms] = React.useState<VirtualRoom[]>([]);
+  const [photos, setPhotos] = React.useState<any[]>([]);
   const [requests, setRequests] = React.useState<DownloadRequest[]>([]);
   const [todayStats, setTodayStats] = React.useState({
     uploads: 0,
@@ -98,6 +99,20 @@ export default function DashboardPage() {
         console.warn("Failed to fetch today's uploads count, using fallback:", err);
       }
 
+      // Fetch all unique photos to compute totalPhotosCount
+      try {
+        const qPhotos = query(
+          collection(db, "photos"),
+          where("photographerId", "==", user.uid),
+          where("isDeleted", "==", false)
+        );
+        const photoSnaps = await getDocs(qPhotos);
+        const fetchedPhotos = photoSnaps.docs.map(doc => doc.data());
+        setPhotos(fetchedPhotos);
+      } catch (err) {
+        console.warn("Failed to fetch all photographer photos:", err);
+      }
+
       setTodayStats({
         uploads: todayUploadsCount,
         downloads: todayDownloadsCount,
@@ -119,7 +134,7 @@ export default function DashboardPage() {
   // Analytics derivations
   const totalRoomsCount = rooms.length;
   
-  const totalPhotosCount = rooms.reduce((sum, r) => sum + (r.photoCount || 0), 0);
+  const totalPhotosCount = photos.length; // Do NOT add AI indexed photos into total count.
   
   const totalStorageBytes = rooms.reduce((sum, r) => {
     // Fallback compilation from room stats
