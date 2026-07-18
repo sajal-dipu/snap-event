@@ -21,7 +21,7 @@ import { toast } from "sonner";
 import { auth } from "@/lib/firebase/auth";
 import { signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import { db } from "@/lib/firebase/firestore";
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, query, where, getDocs } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, query, where, getDocs, deleteDoc } from "firebase/firestore";
 
 type UiMode = "select-access" | "verification" | "gallery-all" | "gallery-matched";
 
@@ -35,6 +35,10 @@ export default function RoomPage() {
   const [sessionLoading, setSessionLoading] = React.useState(true);
   const [faceVerified, setFaceVerified] = React.useState(false);
   const [selfieUrl, setSelfieUrl] = React.useState<string | null>(null);
+
+  // Download request states
+  const [downloadRequest, setDownloadRequest] = React.useState<any | null>(null);
+  const [loadingRequest, setLoadingRequest] = React.useState(false);
 
   // Component UI View States
   const [uiMode, setUiMode] = React.useState<UiMode>("select-access");
@@ -79,6 +83,55 @@ export default function RoomPage() {
       console.error("Failed to load matched photos:", err);
     }
   };
+
+  const fetchDownloadRequest = React.useCallback(async () => {
+    const uid = guestUid || auth.currentUser?.uid;
+    if (!uid) return;
+    setLoadingRequest(true);
+    try {
+      const q = query(
+        collection(db, "downloadRequests"),
+        where("guestUid", "==", uid),
+        where("roomId", "==", roomId)
+      );
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        setDownloadRequest({ id: snap.docs[0].id, ...snap.docs[0].data() });
+      } else {
+        setDownloadRequest(null);
+      }
+    } catch (err) {
+      console.error("Failed to fetch download request status:", err);
+    } finally {
+      setLoadingRequest(false);
+    }
+  }, [guestUid, roomId]);
+
+  const handleResetRequest = async () => {
+    const uid = guestUid || auth.currentUser?.uid;
+    if (!uid) return;
+    try {
+      const q = query(
+        collection(db, "downloadRequests"),
+        where("guestUid", "==", uid),
+        where("roomId", "==", roomId)
+      );
+      const snap = await getDocs(q);
+      const batchDelete = snap.docs.map(docSnap => deleteDoc(docSnap.ref));
+      await Promise.all(batchDelete);
+      setDownloadRequest(null);
+      toast.success("Request reset. You can select photos and submit again.");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to reset request.");
+    }
+  };
+
+  React.useEffect(() => {
+    if (guestUid) {
+      fetchDownloadRequest();
+    }
+  }, [guestUid, fetchDownloadRequest]);
 
   // Helper to load all photos for open gallery browsing
   const loadAllRoomPhotos = async () => {
@@ -635,28 +688,74 @@ export default function RoomPage() {
               />
             )}
 
-            {/* Float action bar for generic gallery downloads */}
-            {allPhotos.length > 0 && selectedPhotoIds.length > 0 && (
-              <div className="fixed bottom-6 inset-x-4 z-40 flex justify-center pointer-events-none">
-                <div className="pointer-events-auto bg-zinc-950 border border-zinc-800 p-4 rounded-3xl shadow-2xl flex items-center gap-4 text-white max-w-lg w-full justify-between animate-in slide-in-from-bottom duration-300">
-                  <div className="pl-2">
-                    <p className="text-xs font-extrabold">Ready to download</p>
-                    <p className="text-[10px] text-zinc-400 mt-0.5 font-bold uppercase">
-                      {selectedPhotoIds.length} of {allPhotos.length} photos selected
-                    </p>
-                  </div>
-                  
-                  <RequestDownloadButton
-                    roomId={roomId}
-                    photographerId={room.photographerId}
-                    photoIds={selectedPhotoIds}
-                    onSuccess={() => {
-                      setSelectedPhotoIds([]);
-                    }}
-                  />
-                </div>
-              </div>
-            )}
+             {/* Float action bar for request status tracking */}
+             {downloadRequest ? (
+               <div className="fixed bottom-6 inset-x-4 z-40 flex justify-center pointer-events-none">
+                 <div className="pointer-events-auto bg-zinc-950 border border-zinc-800 p-4 rounded-3xl shadow-2xl flex items-center gap-4 text-white max-w-lg w-full justify-between animate-in slide-in-from-bottom duration-300">
+                   <div className="pl-2">
+                     <p className="text-xs font-extrabold uppercase tracking-wider text-primary">
+                       Request: {downloadRequest.status}
+                     </p>
+                     <p className="text-[10px] text-zinc-400 mt-0.5 font-semibold">
+                       {downloadRequest.status === "approved"
+                         ? "Your high-resolution photos are ready!"
+                         : downloadRequest.status === "rejected"
+                         ? `Reason: ${downloadRequest.rejectionReason || 'Verification did not match.'}`
+                         : "Waiting for photographer approval..."}
+                     </p>
+                   </div>
+                   
+                   <div>
+                     {downloadRequest.status === "approved" && (
+                       <a
+                         href={`/download/${downloadRequest.downloadToken}`}
+                         target="_blank"
+                         rel="noopener noreferrer"
+                         className="inline-flex items-center justify-center gap-2 h-10 px-5 text-xs font-black bg-green-600 hover:bg-green-700 text-white rounded-xl shadow-md transition-colors"
+                       >
+                         Download Button
+                       </a>
+                     )}
+                     {downloadRequest.status === "rejected" && (
+                       <Button
+                         onClick={handleResetRequest}
+                         className="h-10 px-5 text-xs font-black bg-red-600 hover:bg-red-700 text-white rounded-xl"
+                       >
+                         Request Rejected.
+                       </Button>
+                     )}
+                     {downloadRequest.status === "pending" && (
+                       <span className="inline-flex items-center h-10 px-5 text-xs font-black bg-yellow-600/20 text-yellow-500 rounded-xl border border-yellow-500/30">
+                         Pending Approval
+                       </span>
+                     )}
+                   </div>
+                 </div>
+               </div>
+             ) : (
+               allPhotos.length > 0 && selectedPhotoIds.length > 0 && (
+                 <div className="fixed bottom-6 inset-x-4 z-40 flex justify-center pointer-events-none">
+                   <div className="pointer-events-auto bg-zinc-950 border border-zinc-800 p-4 rounded-3xl shadow-2xl flex items-center gap-4 text-white max-w-lg w-full justify-between animate-in slide-in-from-bottom duration-300">
+                     <div className="pl-2">
+                       <p className="text-xs font-extrabold">Ready to download</p>
+                       <p className="text-[10px] text-zinc-400 mt-0.5 font-bold uppercase">
+                         {selectedPhotoIds.length} of {allPhotos.length} photos selected
+                       </p>
+                     </div>
+                     
+                     <RequestDownloadButton
+                       roomId={roomId}
+                       photographerId={room.photographerId}
+                       photoIds={selectedPhotoIds}
+                       onSuccess={() => {
+                         setSelectedPhotoIds([]);
+                         fetchDownloadRequest();
+                       }}
+                     />
+                   </div>
+                 </div>
+               )
+             )}
           </div>
         )}
 
@@ -742,28 +841,74 @@ export default function RoomPage() {
               />
             )}
 
-            {/* Float action bar for download trigger */}
-            {matchedPhotos.length > 0 && selectedPhotoIds.length > 0 && (
-              <div className="fixed bottom-6 inset-x-4 z-40 flex justify-center pointer-events-none">
-                <div className="pointer-events-auto bg-zinc-950 border border-zinc-800 p-4 rounded-3xl shadow-2xl flex items-center gap-4 text-white max-w-lg w-full justify-between animate-in slide-in-from-bottom duration-300">
-                  <div className="pl-2">
-                    <p className="text-xs font-extrabold">Ready to download</p>
-                    <p className="text-[10px] text-zinc-400 mt-0.5 font-bold uppercase">
-                      {selectedPhotoIds.length} of {matchedPhotos.length} photos selected
-                    </p>
-                  </div>
-                  
-                  <RequestDownloadButton
-                    roomId={roomId}
-                    photographerId={room.photographerId}
-                    photoIds={selectedPhotoIds}
-                    onSuccess={() => {
-                      setSelectedPhotoIds([]);
-                    }}
-                  />
-                </div>
-              </div>
-            )}
+             {/* Float action bar for request status tracking */}
+             {downloadRequest ? (
+               <div className="fixed bottom-6 inset-x-4 z-40 flex justify-center pointer-events-none">
+                 <div className="pointer-events-auto bg-zinc-950 border border-zinc-800 p-4 rounded-3xl shadow-2xl flex items-center gap-4 text-white max-w-lg w-full justify-between animate-in slide-in-from-bottom duration-300">
+                   <div className="pl-2">
+                     <p className="text-xs font-extrabold uppercase tracking-wider text-primary">
+                       Request: {downloadRequest.status}
+                     </p>
+                     <p className="text-[10px] text-zinc-400 mt-0.5 font-semibold">
+                       {downloadRequest.status === "approved"
+                         ? "Your high-resolution photos are ready!"
+                         : downloadRequest.status === "rejected"
+                         ? `Reason: ${downloadRequest.rejectionReason || 'Verification did not match.'}`
+                         : "Waiting for photographer approval..."}
+                     </p>
+                   </div>
+                   
+                   <div>
+                     {downloadRequest.status === "approved" && (
+                       <a
+                         href={`/download/${downloadRequest.downloadToken}`}
+                         target="_blank"
+                         rel="noopener noreferrer"
+                         className="inline-flex items-center justify-center gap-2 h-10 px-5 text-xs font-black bg-green-600 hover:bg-green-700 text-white rounded-xl shadow-md transition-colors"
+                       >
+                         Download Button
+                       </a>
+                     )}
+                     {downloadRequest.status === "rejected" && (
+                       <Button
+                         onClick={handleResetRequest}
+                         className="h-10 px-5 text-xs font-black bg-red-600 hover:bg-red-700 text-white rounded-xl"
+                       >
+                         Request Rejected.
+                       </Button>
+                     )}
+                     {downloadRequest.status === "pending" && (
+                       <span className="inline-flex items-center h-10 px-5 text-xs font-black bg-yellow-600/20 text-yellow-500 rounded-xl border border-yellow-500/30">
+                         Pending Approval
+                       </span>
+                     )}
+                   </div>
+                 </div>
+               </div>
+             ) : (
+               matchedPhotos.length > 0 && selectedPhotoIds.length > 0 && (
+                 <div className="fixed bottom-6 inset-x-4 z-40 flex justify-center pointer-events-none">
+                   <div className="pointer-events-auto bg-zinc-950 border border-zinc-800 p-4 rounded-3xl shadow-2xl flex items-center gap-4 text-white max-w-lg w-full justify-between animate-in slide-in-from-bottom duration-300">
+                     <div className="pl-2">
+                       <p className="text-xs font-extrabold">Ready to download</p>
+                       <p className="text-[10px] text-zinc-400 mt-0.5 font-bold uppercase">
+                         {selectedPhotoIds.length} of {matchedPhotos.length} photos selected
+                       </p>
+                     </div>
+                     
+                     <RequestDownloadButton
+                       roomId={roomId}
+                       photographerId={room.photographerId}
+                       photoIds={selectedPhotoIds}
+                       onSuccess={() => {
+                         setSelectedPhotoIds([]);
+                         fetchDownloadRequest();
+                       }}
+                     />
+                   </div>
+                 </div>
+               )
+             )}
 
           </div>
         )}

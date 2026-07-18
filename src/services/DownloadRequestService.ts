@@ -97,17 +97,22 @@ export class DownloadRequestService {
       ];
       if (filters.status) constraints.push(where("status", "==", filters.status));
 
-      constraints.push(orderBy("createdAt", filters.sortBy === "oldest" ? "asc" : "desc"));
-      constraints.push(limit(pageSize + 1));
-      if (lastDocSnapshot) constraints.push(startAfter(lastDocSnapshot));
-
       const snaps = await getDocs(query(collection(db, this.collection), ...constraints));
-      const hasMore = snaps.docs.length > pageSize;
-      const docs = hasMore ? snaps.docs.slice(0, pageSize) : snaps.docs;
+      let docs = snaps.docs;
+
+      // Sort in-memory to avoid missing composite index crashes
+      docs.sort((a, b) => {
+        const timeA = a.data().createdAt?.toMillis ? a.data().createdAt.toMillis() : new Date(a.data().createdAt || 0).getTime();
+        const timeB = b.data().createdAt?.toMillis ? b.data().createdAt.toMillis() : new Date(b.data().createdAt || 0).getTime();
+        return filters.sortBy === "oldest" ? timeA - timeB : timeB - timeA;
+      });
+
+      const hasMore = docs.length > pageSize;
+      const slicedDocs = hasMore ? docs.slice(0, pageSize) : docs;
 
       return {
-        data: docs.map((d) => this.mapDoc(d)),
-        total: docs.length,
+        data: slicedDocs.map((d) => this.mapDoc(d)),
+        total: slicedDocs.length,
         hasMore,
       };
     } catch (error) {
@@ -131,17 +136,22 @@ export class DownloadRequestService {
       ];
       if (filters.status) constraints.push(where("status", "==", filters.status));
 
-      constraints.push(orderBy("createdAt", filters.sortBy === "oldest" ? "asc" : "desc"));
-      constraints.push(limit(pageSize + 1));
-      if (lastDocSnapshot) constraints.push(startAfter(lastDocSnapshot));
-
       const snaps = await getDocs(query(collection(db, this.collection), ...constraints));
-      const hasMore = snaps.docs.length > pageSize;
-      const docs = hasMore ? snaps.docs.slice(0, pageSize) : snaps.docs;
+      let docs = snaps.docs;
+
+      // Sort in-memory to avoid missing composite index crashes
+      docs.sort((a, b) => {
+        const timeA = a.data().createdAt?.toMillis ? a.data().createdAt.toMillis() : new Date(a.data().createdAt || 0).getTime();
+        const timeB = b.data().createdAt?.toMillis ? b.data().createdAt.toMillis() : new Date(b.data().createdAt || 0).getTime();
+        return filters.sortBy === "oldest" ? timeA - timeB : timeB - timeA;
+      });
+
+      const hasMore = docs.length > pageSize;
+      const slicedDocs = hasMore ? docs.slice(0, pageSize) : docs;
 
       return {
-        data: docs.map((d) => this.mapDoc(d)),
-        total: docs.length,
+        data: slicedDocs.map((d) => this.mapDoc(d)),
+        total: slicedDocs.length,
         hasMore,
       };
     } catch (error) {
@@ -161,18 +171,24 @@ export class DownloadRequestService {
     try {
       const constraints: Parameters<typeof query>[1][] = [
         where("customerId", "==", customerId),
-        orderBy("createdAt", "desc"),
-        limit(pageSize + 1),
       ];
-      if (lastDocSnapshot) constraints.push(startAfter(lastDocSnapshot));
 
       const snaps = await getDocs(query(collection(db, this.collection), ...constraints));
-      const hasMore = snaps.docs.length > pageSize;
-      const docs = hasMore ? snaps.docs.slice(0, pageSize) : snaps.docs;
+      let docs = snaps.docs;
+
+      // Sort in-memory to avoid missing composite index crashes
+      docs.sort((a, b) => {
+        const timeA = a.data().createdAt?.toMillis ? a.data().createdAt.toMillis() : new Date(a.data().createdAt || 0).getTime();
+        const timeB = b.data().createdAt?.toMillis ? b.data().createdAt.toMillis() : new Date(b.data().createdAt || 0).getTime();
+        return timeB - timeA;
+      });
+
+      const hasMore = docs.length > pageSize;
+      const slicedDocs = hasMore ? docs.slice(0, pageSize) : docs;
 
       return {
-        data: docs.map((d) => this.mapDoc(d)),
-        total: docs.length,
+        data: slicedDocs.map((d) => this.mapDoc(d)),
+        total: slicedDocs.length,
         hasMore,
       };
     } catch (error) {
