@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { useForm, useFieldArray } from "react-hook-form";
+import { useForm, useFieldArray, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -147,7 +147,6 @@ export function ProfileForm({ initialData, uid, onProfileUpdated }: ProfileFormP
     register,
     handleSubmit,
     setValue,
-    watch,
     control,
     formState: { errors }
   } = useForm({
@@ -201,14 +200,15 @@ export function ProfileForm({ initialData, uid, onProfileUpdated }: ProfileFormP
   });
 
   // Watch field values for dynamic views
-  const watchedProfileImage = watch("profileImage");
-  const watchedCoverImage = watch("coverImage");
-  const watchedLogo = watch("logo");
-  const watchedPortfolio = watch("portfolioImages") || [];
-  const watchedSpecialties = watch("specialties") || [];
-  const watchedLanguages = watch("languages") || [];
-  const watchedWeeklySchedule = watch("weeklySchedule") || {};
-  const watchedUnavailableDates = watch("unavailableDates") || [];
+  const watchedProfileImage = useWatch({ control, name: "profileImage" });
+  const watchedCoverImage = useWatch({ control, name: "coverImage" });
+  const watchedLogo = useWatch({ control, name: "logo" });
+  const watchedPortfolio = useWatch({ control, name: "portfolioImages" }) || [];
+  const watchedSpecialties = useWatch({ control, name: "specialties" }) || [];
+  const watchedLanguages = useWatch({ control, name: "languages" }) || [];
+  const watchedWeeklySchedule = useWatch({ control, name: "weeklySchedule" }) || {};
+  const watchedUnavailableDates = useWatch({ control, name: "unavailableDates" }) || [];
+  const watchedCurrency = useWatch({ control, name: "currency" }) || "INR";
 
   // Manage Packages field array
   const { fields: packageFields, append: appendPackage, remove: removePackage } = useFieldArray({
@@ -870,7 +870,7 @@ export function ProfileForm({ initialData, uid, onProfileUpdated }: ProfileFormP
                           name: "",
                           description: "",
                           price: 10000,
-                          currency: watch("currency") || "INR",
+                          currency: watchedCurrency,
                           durationHours: 4,
                           includes: []
                         })

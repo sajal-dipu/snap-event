@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Star, MessageSquare, ShieldAlert, Sparkles, Image as ImageIcon, Trash2, CheckCircle, ArrowRight, Loader2 } from "lucide-react";
@@ -43,7 +43,7 @@ export default function SubmitReviewPage() {
     register,
     handleSubmit,
     setValue,
-    watch,
+    control,
     formState: { errors },
   } = useForm<ReviewFormData>({
     resolver: zodResolver(reviewFormSchema),
@@ -54,7 +54,7 @@ export default function SubmitReviewPage() {
     },
   });
 
-  const ratingValue = watch("rating");
+  const ratingValue = useWatch({ control, name: "rating" });
 
   // Load Booking Details
   useEffect(() => {

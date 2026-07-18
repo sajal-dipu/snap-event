@@ -40,7 +40,7 @@ import {
   Save
 } from "lucide-react";
 import Link from "next/link";
-import { useForm, Controller } from "react-hook-form";
+import { useForm, Controller, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { motion, AnimatePresence } from "framer-motion";
 import { PhotographerDashboardLayout } from "@/components/layout/PhotographerDashboardLayout";
@@ -196,7 +196,6 @@ export default function RoomDetailsPage({ params }: PageProps) {
     handleSubmit,
     control,
     setValue,
-    watch,
     formState: { errors },
   } = useForm<any>({
     resolver: zodResolver(CreateRoomFormSchema),
@@ -223,7 +222,7 @@ export default function RoomDetailsPage({ params }: PageProps) {
   });
 
   const formErrors = errors as any;
-  const watchAutoCloseRoom = watch("autoCloseRoom");
+  const watchAutoCloseRoom = useWatch({ control, name: "autoCloseRoom" });
 
   // Real-Time Activity Streams for Overview Tab
   const [realtimeActivity, setRealtimeActivity] = React.useState<{

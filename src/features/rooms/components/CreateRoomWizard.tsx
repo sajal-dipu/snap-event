@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { useForm, Controller } from "react-hook-form";
+import { useForm, Controller, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -59,7 +59,6 @@ export function CreateRoomWizard() {
     register,
     handleSubmit,
     control,
-    watch,
     trigger,
     setValue,
     formState: { errors },
@@ -88,7 +87,7 @@ export function CreateRoomWizard() {
     },
   });
 
-  const watchAutoCloseRoom = watch("autoCloseRoom");
+  const watchAutoCloseRoom = useWatch({ control, name: "autoCloseRoom" });
 
   // Step names
   // Fetch completed bookings for this photographer
