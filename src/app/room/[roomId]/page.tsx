@@ -21,7 +21,7 @@ import { toast } from "sonner";
 import { auth } from "@/lib/firebase/auth";
 import { signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import { db } from "@/lib/firebase/firestore";
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, query, where, getDocs, deleteDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, query, where, getDocs, deleteDoc, onSnapshot } from "firebase/firestore";
 
 type UiMode = "select-access" | "verification" | "gallery-all" | "gallery-matched";
 
@@ -75,7 +75,7 @@ export default function RoomPage() {
         photoIds.map(id => getDoc(doc(db, "photos", id)))
       );
       const fetchedPhotos = docs
-        .filter(d => d.exists())
+        .filter(d => d.exists() && d.data()?.isDeleted !== true)
         .map(d => ({ id: d.id, ...d.data() } as any));
       setMatchedPhotos(fetchedPhotos);
       setSelectedPhotoIds(fetchedPhotos.map((p: any) => p.id));
@@ -138,9 +138,15 @@ export default function RoomPage() {
     setLoadingAllPhotos(true);
     try {
       console.log("[RoomPage] Querying all photos for room:", roomId);
-      const q = query(collection(db, "photos"), where("roomId", "==", roomId));
+      const q = query(
+        collection(db, "photos"),
+        where("roomId", "==", roomId),
+        where("isDeleted", "==", false)
+      );
       const snap = await getDocs(q);
-      const fetched = snap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() as any }));
+      const fetched = snap.docs
+        .map(docSnap => ({ id: docSnap.id, ...docSnap.data() as any }))
+        .filter(p => p.isDeleted !== true);
       setAllPhotos(fetched);
       setSelectedPhotoIds(fetched.map((p: any) => p.id));
       setUiMode("gallery-all");
@@ -156,6 +162,8 @@ export default function RoomPage() {
   React.useEffect(() => {
     if (isLoadingRoom || !room) return;
 
+    let unsubscribeSession: (() => void) | null = null;
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       try {
         let uid = user?.uid;
@@ -170,54 +178,62 @@ export default function RoomPage() {
         localStorage.setItem("guestRoomId", roomId);
         localStorage.setItem("guestUid", uid);
 
-        // Fetch guestSession from Firestore
+        // Subscribe to guestSession real-time updates from Firestore
         const sessionRef = doc(db, "guestSessions", uid);
-        const sessionSnap = await getDoc(sessionRef);
         const requiresVerify = room.requireFaceVerification ?? false;
 
-        if (sessionSnap.exists()) {
-          const sessionData = sessionSnap.data();
-          if (sessionData.roomId === roomId) {
-            const isVerified = !!sessionData.faceVerified;
-            setFaceVerified(isVerified);
-            if (isVerified) {
-              const url = sessionData.secureUrl || sessionData.selfie?.secureUrl || null;
-              setSelfieUrl(url);
-              setSelfiePreviewUrl(url);
-              setMatchingDone(true);
-              setUiMode("gallery-matched");
-              await loadMatchedPhotos(sessionData.matchedPhotos || []);
+        unsubscribeSession = onSnapshot(sessionRef, async (sessionSnap) => {
+          try {
+            if (sessionSnap.exists()) {
+              const sessionData = sessionSnap.data();
+              if (sessionData.roomId === roomId) {
+                const isVerified = !!sessionData.faceVerified;
+                setFaceVerified(isVerified);
+                if (isVerified) {
+                  const url = sessionData.secureUrl || sessionData.selfie?.secureUrl || null;
+                  setSelfieUrl(url);
+                  setSelfiePreviewUrl(url);
+                  setMatchingDone(true);
+                  setUiMode("gallery-matched");
+                  await loadMatchedPhotos(sessionData.matchedPhotos || []);
+                } else {
+                  setUiMode(requiresVerify ? "verification" : "select-access");
+                }
+              } else {
+                // New room session needed for this guest
+                await setDoc(sessionRef, {
+                  uid,
+                  roomId,
+                  joinedAt: serverTimestamp(),
+                  faceVerified: false,
+                  selfieUploaded: false,
+                  matchedPhotos: []
+                }, { merge: true });
+                setFaceVerified(false);
+                setSelfieUrl(null);
+                setUiMode(requiresVerify ? "verification" : "select-access");
+              }
             } else {
+              // Create new session document
+              await setDoc(sessionRef, {
+                uid,
+                roomId,
+                joinedAt: serverTimestamp(),
+                faceVerified: false,
+                selfieUploaded: false,
+                matchedPhotos: []
+              });
+              setFaceVerified(false);
+              setSelfieUrl(null);
               setUiMode(requiresVerify ? "verification" : "select-access");
             }
-          } else {
-            // New room session needed for this guest
-            await setDoc(sessionRef, {
-              uid,
-              roomId,
-              joinedAt: serverTimestamp(),
-              faceVerified: false,
-              selfieUploaded: false,
-              matchedPhotos: []
-            }, { merge: true });
-            setFaceVerified(false);
-            setSelfieUrl(null);
-            setUiMode(requiresVerify ? "verification" : "select-access");
+          } catch (sessionErr) {
+            console.error("Failed processing session updates:", sessionErr);
           }
-        } else {
-          // Create new session document
-          await setDoc(sessionRef, {
-            uid,
-            roomId,
-            joinedAt: serverTimestamp(),
-            faceVerified: false,
-            selfieUploaded: false,
-            matchedPhotos: []
-          });
-          setFaceVerified(false);
-          setSelfieUrl(null);
-          setUiMode(requiresVerify ? "verification" : "select-access");
-        }
+        }, (err) => {
+          console.error("Guest session listener failed:", err);
+        });
+
       } catch (err) {
         console.error("Failed to initialize guest session:", err);
         toast.error("Failed to initialize session. Please reload.");
@@ -226,7 +242,12 @@ export default function RoomPage() {
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (unsubscribeSession) {
+        unsubscribeSession();
+      }
+    };
   }, [roomId, room, isLoadingRoom]);
 
   // Create selfie URL preview for scanner visualization

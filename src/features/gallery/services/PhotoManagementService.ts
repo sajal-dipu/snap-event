@@ -441,6 +441,77 @@ export class PhotoManagementService {
       });
 
       await batch.commit();
+
+      // Remove deleted photo ids from downloadRequests in the room
+      try {
+        const q = query(
+          collection(db, "downloadRequests"),
+          where("roomId", "==", roomId)
+        );
+        const reqSnaps = await getDocs(q);
+        const reqBatch = writeBatch(db);
+        let updatedCount = 0;
+        reqSnaps.forEach((docSnap) => {
+          const data = docSnap.data();
+          const reqIds = data.requestedPhotoIds || [];
+          const reqPhotos = data.requestedPhotos || [];
+          const appIds = data.approvedPhotoIds || [];
+          const rejIds = data.rejectedPhotoIds || [];
+
+          const newReqIds = reqIds.filter((id: string) => !photoIds.includes(id));
+          const newReqPhotos = reqPhotos.filter((id: string) => !photoIds.includes(id));
+          const newAppIds = appIds.filter((id: string) => !photoIds.includes(id));
+          const newRejIds = rejIds.filter((id: string) => !photoIds.includes(id));
+
+          if (
+            newReqIds.length !== reqIds.length ||
+            newReqPhotos.length !== reqPhotos.length ||
+            newAppIds.length !== appIds.length ||
+            newRejIds.length !== rejIds.length
+          ) {
+            reqBatch.update(docSnap.ref, {
+              requestedPhotoIds: newReqIds,
+              requestedPhotos: newReqPhotos,
+              approvedPhotoIds: newAppIds,
+              rejectedPhotoIds: newRejIds,
+              updatedAt: serverTimestamp(),
+            });
+            updatedCount++;
+          }
+        });
+        if (updatedCount > 0) {
+          await reqBatch.commit();
+        }
+      } catch (err) {
+        console.error("Failed to update downloadRequests after photo soft-delete:", err);
+      }
+
+      // Remove deleted photo ids from guestSessions matchedPhotos in the room
+      try {
+        const q = query(
+          collection(db, "guestSessions"),
+          where("roomId", "==", roomId)
+        );
+        const sessionSnaps = await getDocs(q);
+        const sessionBatch = writeBatch(db);
+        let updatedCount = 0;
+        sessionSnaps.forEach((docSnap) => {
+          const data = docSnap.data();
+          const matched = data.matchedPhotos || [];
+          const newMatched = matched.filter((id: string) => !photoIds.includes(id));
+          if (newMatched.length !== matched.length) {
+            sessionBatch.update(docSnap.ref, {
+              matchedPhotos: newMatched,
+            });
+            updatedCount++;
+          }
+        });
+        if (updatedCount > 0) {
+          await sessionBatch.commit();
+        }
+      } catch (err) {
+        console.error("Failed to update guestSessions after photo soft-delete:", err);
+      }
     } catch (error) {
       logger.error("Failed to soft delete photos:", error);
       throw handleFirebaseError(error);
@@ -487,6 +558,25 @@ export class PhotoManagementService {
   public async permanentDelete(photos: { id: string; cloudinaryPublicId: string }[]): Promise<void> {
     try {
       const publicIds = photos.map((p) => p.cloudinaryPublicId);
+      const photoIds = photos.map((p) => p.id);
+
+      // Fetch the photo docs first to get their roomIds
+      let roomIds: string[] = [];
+      try {
+        const docs = await Promise.all(
+          photoIds.map((id) => getDoc(doc(db, this.collectionName, id)))
+        );
+        docs.forEach((snap) => {
+          if (snap.exists()) {
+            const rid = snap.data()?.roomId;
+            if (rid && !roomIds.includes(rid)) {
+              roomIds.push(rid);
+            }
+          }
+        });
+      } catch (fetchErr) {
+        console.error("Failed to fetch photo roomIds before delete:", fetchErr);
+      }
 
       // Call secure server delete endpoint
       const response = await fetch("/api/gallery/delete", {
@@ -504,6 +594,81 @@ export class PhotoManagementService {
         deleteDoc(doc(db, this.collectionName, p.id))
       );
       await Promise.all(deletePromises);
+
+      // Remove deleted photo ids from downloadRequests in those rooms
+      if (roomIds.length > 0) {
+        for (const roomId of roomIds) {
+          try {
+            const q = query(
+              collection(db, "downloadRequests"),
+              where("roomId", "==", roomId)
+            );
+            const reqSnaps = await getDocs(q);
+            const reqBatch = writeBatch(db);
+            let updatedCount = 0;
+            reqSnaps.forEach((docSnap) => {
+              const data = docSnap.data();
+              const reqIds = data.requestedPhotoIds || [];
+              const reqPhotos = data.requestedPhotos || [];
+              const appIds = data.approvedPhotoIds || [];
+              const rejIds = data.rejectedPhotoIds || [];
+
+              const newReqIds = reqIds.filter((id: string) => !photoIds.includes(id));
+              const newReqPhotos = reqPhotos.filter((id: string) => !photoIds.includes(id));
+              const newAppIds = appIds.filter((id: string) => !photoIds.includes(id));
+              const newRejIds = rejIds.filter((id: string) => !photoIds.includes(id));
+
+              if (
+                newReqIds.length !== reqIds.length ||
+                newReqPhotos.length !== reqPhotos.length ||
+                newAppIds.length !== appIds.length ||
+                newRejIds.length !== rejIds.length
+              ) {
+                reqBatch.update(docSnap.ref, {
+                  requestedPhotoIds: newReqIds,
+                  requestedPhotos: newReqPhotos,
+                  approvedPhotoIds: newAppIds,
+                  rejectedPhotoIds: newRejIds,
+                  updatedAt: serverTimestamp(),
+                });
+                updatedCount++;
+              }
+            });
+            if (updatedCount > 0) {
+              await reqBatch.commit();
+            }
+          } catch (err) {
+            console.error("Failed to update downloadRequests after permanent delete:", err);
+          }
+
+          // Remove deleted photo ids from guestSessions matchedPhotos in the room
+          try {
+            const q = query(
+              collection(db, "guestSessions"),
+              where("roomId", "==", roomId)
+            );
+            const sessionSnaps = await getDocs(q);
+            const sessionBatch = writeBatch(db);
+            let updatedCount = 0;
+            sessionSnaps.forEach((docSnap) => {
+              const data = docSnap.data();
+              const matched = data.matchedPhotos || [];
+              const newMatched = matched.filter((id: string) => !photoIds.includes(id));
+              if (newMatched.length !== matched.length) {
+                sessionBatch.update(docSnap.ref, {
+                  matchedPhotos: newMatched,
+                });
+                updatedCount++;
+              }
+            });
+            if (updatedCount > 0) {
+              await sessionBatch.commit();
+            }
+          } catch (err) {
+            console.error("Failed to update guestSessions after photo permanent-delete:", err);
+          }
+        }
+      }
     } catch (error) {
       logger.error("Failed to permanently delete photos:", error);
       throw handleFirebaseError(error);
