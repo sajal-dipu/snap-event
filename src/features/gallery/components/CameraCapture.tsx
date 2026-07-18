@@ -54,34 +54,54 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
       setErrorMessage(errMsg);
       setHasPermission(false);
       setIsLoading(false);
+      toast.error(errMsg);
       return;
     }
 
     let mediaStream: MediaStream | null = null;
     let lastError: any = null;
 
-    // Detect mobile device
-    const isMobile = typeof window !== "undefined" && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-    console.log(`[CameraCapture] Device detection: isMobile=${isMobile}`);
-
-    // Constraints setup defaulting to facingMode: "user"
-    const constraints = {
-      video: { facingMode: "user" as const },
-      audio: false
-    };
-
     try {
-      console.log("[CameraCapture] Attempting config: facingMode user");
-      mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      console.log("[CameraCapture] Attempting config: facingMode environment");
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: {
+            ideal: "environment"
+          },
+          width: {
+            ideal: 1280
+          },
+          height: {
+            ideal: 720
+          }
+        }
+      });
     } catch (error) {
-      console.warn("[CameraCapture] facingMode user failed, retrying generic video: true", error);
+      console.warn("[CameraCapture] environment camera failed, falling back to user camera", error);
       try {
+        console.log("[CameraCapture] Attempting config: facingMode user (ideal)");
         mediaStream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false
+          video: {
+            facingMode: {
+              ideal: "user"
+            },
+            width: {
+              ideal: 1280
+            },
+            height: {
+              ideal: 720
+            }
+          }
         });
-      } catch (fallbackError) {
-        lastError = fallbackError;
+      } catch (userError) {
+        console.warn("[CameraCapture] user camera failed, trying generic video: true", userError);
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({
+            video: true
+          });
+        } catch (fallbackError) {
+          lastError = fallbackError;
+        }
       }
     }
 
@@ -94,10 +114,23 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
         const video = videoRef.current;
         video.srcObject = mediaStream;
         
-        // Debug logs as requested
-        console.log(mediaStream);
+        // Wait for video.onloadedmetadata before play() to prevent black screen issues
+        if (video.readyState >= 1) {
+          console.log("[CameraCapture] Metadata already loaded.");
+        } else {
+          await new Promise<void>((resolve) => {
+            video.onloadedmetadata = () => {
+              resolve();
+            };
+          });
+        }
+
+        // Debug logs as requested in task 5
+        const stream = mediaStream;
         console.log(video.readyState);
-        console.log(video.srcObject);
+        console.log(video.videoWidth);
+        console.log(video.videoHeight);
+        console.log(stream.getTracks());
 
         // Await play with retry logic
         let playAttempts = 0;
@@ -128,6 +161,7 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
       setErrorMessage(errMsg);
       setHasPermission(false);
       setIsLoading(false);
+      toast.error(`Camera access error: ${errMsg}`);
     }
   }, []);
 
@@ -190,13 +224,13 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
       const video = videoRef.current;
       video.srcObject = stream;
       
-      console.log(stream);
-      console.log(video.readyState);
-      console.log(video.srcObject);
-
       video.play()
         .then(() => {
           setIsVideoPlaying(true);
+          console.log(video.readyState);
+          console.log(video.videoWidth);
+          console.log(video.videoHeight);
+          console.log(stream.getTracks());
         })
         .catch(err => {
           console.error("Error playing retake video:", err);
@@ -254,12 +288,14 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
             autoPlay
             playsInline
             muted
+            onPlaying={() => setIsVideoPlaying(true)}
+            onPause={() => setIsVideoPlaying(false)}
             className="w-full h-full object-cover scale-x-[-1]" // mirror effect
             style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", opacity: 1, visibility: "visible", zIndex: 1 }}
           />
         )}
 
-        {/* Tap to Start Camera button if play fails / paused */}
+        {/* Tap to Start Camera button overlay */}
         {!capturedImage && hasPermission && stream && !isVideoPlaying && !isLoading && (
           <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center bg-zinc-950/70 text-white z-10 font-sans">
             <Button
@@ -270,9 +306,11 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
                     const video = videoRef.current;
                     await video.play();
                     setIsVideoPlaying(true);
-                    console.log(stream);
+                    
                     console.log(video.readyState);
-                    console.log(video.srcObject);
+                    console.log(video.videoWidth);
+                    console.log(video.videoHeight);
+                    console.log(stream.getTracks());
                   }
                 } catch (err) {
                   console.error("Manual play start failed:", err);
