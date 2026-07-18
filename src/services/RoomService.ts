@@ -483,10 +483,32 @@ export class RoomService {
 
       for (let i = 0; i < photos.length; i++) {
         const photo = photos[i];
-        const publicId = photo.publicId || photo.cloudinaryPublicId || photo.asset?.publicId;
-        if (publicId) {
+        console.log(photo);
+        console.log(photo.publicId);
+
+        let targetPublicId = photo.publicId || photo.cloudinaryPublicId || photo.asset?.publicId;
+        if (!targetPublicId && (photo.secureUrl || photo.url)) {
+          const urlStr = photo.secureUrl || photo.url;
+          const parts = urlStr.split('/upload/');
+          if (parts.length === 2) {
+            let pathAfterUpload = parts[1];
+            const pathParts = pathAfterUpload.split('/');
+            const versionIdx = pathParts.findIndex((p: string) => p.match(/^v\d+$/));
+            if (versionIdx !== -1 && versionIdx < pathParts.length - 1) {
+              const remaining = pathParts.slice(versionIdx + 1).join('/');
+              const dotIdx = remaining.lastIndexOf('.');
+              targetPublicId = dotIdx !== -1 ? remaining.substring(0, dotIdx) : remaining;
+            } else {
+              const lastPart = pathParts[pathParts.length - 1];
+              const dotIdx = lastPart.lastIndexOf('.');
+              targetPublicId = dotIdx !== -1 ? lastPart.substring(0, dotIdx) : lastPart;
+            }
+          }
+        }
+
+        if (targetPublicId) {
           try {
-            let cleanPublicId = publicId;
+            let cleanPublicId = targetPublicId;
             const dotIndex = cleanPublicId.lastIndexOf(".");
             if (dotIndex !== -1) {
               cleanPublicId = cleanPublicId.substring(0, dotIndex);
@@ -498,13 +520,15 @@ export class RoomService {
               body: JSON.stringify({ publicId: cleanPublicId, secureUrl: photo.secureUrl || photo.url }),
             });
             if (res.ok) {
+              const result = await res.json();
+              console.log(result);
               console.log("Deleted Cloudinary:", cleanPublicId);
             } else {
               console.error(`Failed to delete Cloudinary asset: ${cleanPublicId}`);
               failedCloudinaryCount++;
             }
           } catch (err) {
-            console.error(`Error deleting Cloudinary asset: ${publicId}`, err);
+            console.error(`Error deleting Cloudinary asset: ${targetPublicId}`, err);
             failedCloudinaryCount++;
           }
         }

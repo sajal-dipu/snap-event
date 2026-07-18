@@ -21,7 +21,6 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
   const [isLoading, setIsLoading] = React.useState(true);
   const [isVideoPlaying, setIsVideoPlaying] = React.useState(false);
 
-
   // Helper to resolve user-friendly error messages based on WebRTC exceptions
   const getCameraErrorMessage = (err: any): string => {
     if (typeof navigator === "undefined" || !navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
@@ -61,13 +60,19 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
     let mediaStream: MediaStream | null = null;
     let lastError: any = null;
 
-    // Retry configuration chain matching spec requirement
+    // Detect mobile device
+    const isMobile = typeof window !== "undefined" && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    console.log(`[CameraCapture] Device detection: isMobile=${isMobile}`);
+
+    // Constraints setup defaulting to facingMode: "user"
+    const constraints = {
+      video: { facingMode: "user" as const },
+      audio: false
+    };
+
     try {
       console.log("[CameraCapture] Attempting config: facingMode user");
-      mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user" },
-        audio: false
-      });
+      mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
     } catch (error) {
       console.warn("[CameraCapture] facingMode user failed, retrying generic video: true", error);
       try {
@@ -81,46 +86,40 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
     }
 
     if (mediaStream) {
-      // Required debugging logs
-      console.log("Stream:", mediaStream);
-      console.log("Tracks:", mediaStream.getVideoTracks());
-      
       setStream(mediaStream);
       streamRef.current = mediaStream;
       setHasPermission(true);
 
       if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-        try {
-          // Await metadata load
-          await new Promise<void>((resolve) => {
-            if (videoRef.current) {
-              videoRef.current.onloadedmetadata = () => resolve();
-            } else {
-              resolve();
-            }
-          });
-          // Play stream
-          await videoRef.current.play();
-          setIsVideoPlaying(true);
-        } catch (playErr) {
-          console.error("Camera play error on stream init:", playErr);
-          setIsVideoPlaying(false);
-        }
+        const video = videoRef.current;
+        video.srcObject = mediaStream;
+        
+        // Debug logs as requested
+        console.log(mediaStream);
+        console.log(video.readyState);
+        console.log(video.srcObject);
 
-        // Mobile Chrome specific fix
-        setTimeout(async () => {
-          if (videoRef.current && videoRef.current.paused) {
-            try {
-              await videoRef.current.play();
-              setIsVideoPlaying(true);
-              console.log("Mobile Chrome fallback play succeeded");
-            } catch (fallbackErr) {
-              console.error("Mobile Chrome fallback play failed:", fallbackErr);
-              setIsVideoPlaying(false);
+        // Await play with retry logic
+        let playAttempts = 0;
+        let playSucceeded = false;
+        while (playAttempts < 3 && !playSucceeded) {
+          try {
+            await video.play();
+            playSucceeded = true;
+            setIsVideoPlaying(true);
+            console.log(`[CameraCapture] video.play() succeeded on attempt ${playAttempts + 1}`);
+          } catch (playErr) {
+            playAttempts++;
+            console.warn(`[CameraCapture] video.play() attempt ${playAttempts} failed:`, playErr);
+            if (playAttempts < 3) {
+              await new Promise((resolve) => setTimeout(resolve, 500));
             }
           }
-        }, 300);
+        }
+
+        if (!playSucceeded) {
+          setIsVideoPlaying(false);
+        }
       }
       setIsLoading(false);
     } else {
@@ -188,8 +187,21 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
     setCapturedImage(null);
     setCapturedFile(null);
     if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.play().catch(err => console.error("Error playing retake video:", err));
+      const video = videoRef.current;
+      video.srcObject = stream;
+      
+      console.log(stream);
+      console.log(video.readyState);
+      console.log(video.srcObject);
+
+      video.play()
+        .then(() => {
+          setIsVideoPlaying(true);
+        })
+        .catch(err => {
+          console.error("Error playing retake video:", err);
+          setIsVideoPlaying(false);
+        });
     }
   };
 
@@ -202,7 +214,6 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
   const handleCancel = () => {
     onCancel();
   };
-
 
   return (
     <div className="space-y-4 w-full max-w-[280px] sm:max-w-sm mx-auto">
@@ -248,28 +259,29 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
           />
         )}
 
-        {/* Camera initialized but preview failed fallback overlay */}
+        {/* Tap to Start Camera button if play fails / paused */}
         {!capturedImage && hasPermission && stream && !isVideoPlaying && !isLoading && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center bg-zinc-950 text-yellow-500 z-10 font-sans">
-            <AlertCircle className="h-7 w-7 text-yellow-500 mb-2 animate-pulse" />
-            <span className="text-xs font-bold uppercase tracking-wide">Preview Suspension</span>
-            <p className="text-[10px] text-zinc-400 mt-1.5 max-w-[200px] leading-normal font-medium">
-              Camera initialized but preview failed. Click below to start the feed.
-            </p>
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center bg-zinc-950/70 text-white z-10 font-sans">
             <Button
               type="button"
               onClick={async () => {
                 try {
-                  await videoRef.current?.play();
-                  setIsVideoPlaying(true);
+                  if (videoRef.current) {
+                    const video = videoRef.current;
+                    await video.play();
+                    setIsVideoPlaying(true);
+                    console.log(stream);
+                    console.log(video.readyState);
+                    console.log(video.srcObject);
+                  }
                 } catch (err) {
                   console.error("Manual play start failed:", err);
                 }
               }}
-              variant="outline"
-              className="mt-3.5 text-[10px] border-yellow-500/25 text-yellow-500 hover:bg-yellow-500/10 font-bold px-3 py-1.5 rounded-xl"
+              className="bg-primary hover:bg-primary/90 text-white font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-2"
             >
-              Start Feed
+              <Camera className="h-4 w-4" />
+              Tap to Start Camera
             </Button>
           </div>
         )}
