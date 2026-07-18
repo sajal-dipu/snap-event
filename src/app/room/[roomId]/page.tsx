@@ -15,13 +15,15 @@ import { ProcessingLoader } from "@/features/gallery/components/ProcessingLoader
 import { MatchGallery } from "@/features/gallery/components/MatchGallery";
 import { RequestDownloadButton } from "@/features/gallery/components/RequestDownloadButton";
 import { useMatchSelfieMutation, type MatchedPhotoInfo } from "@/features/gallery/hooks/useAiMatching";
-import { Camera, Upload, Shield, Calendar, MapPin, Sparkles, RefreshCw } from "lucide-react";
+import { Camera, Upload, Shield, Calendar, MapPin, Sparkles, RefreshCw, Images, Search } from "lucide-react";
 import { formatDate } from "@/utils/formatters";
 import { toast } from "sonner";
 import { auth } from "@/lib/firebase/auth";
 import { signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import { db } from "@/lib/firebase/firestore";
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, query, where, getDocs } from "firebase/firestore";
+
+type UiMode = "select-access" | "verification" | "gallery-all" | "gallery-matched";
 
 export default function RoomPage() {
   const params = useParams();
@@ -31,10 +33,11 @@ export default function RoomPage() {
   // Session states
   const [guestUid, setGuestUid] = React.useState<string | null>(null);
   const [sessionLoading, setSessionLoading] = React.useState(true);
-  const [selfieUploaded, setSelfieUploaded] = React.useState(false);
+  const [faceVerified, setFaceVerified] = React.useState(false);
   const [selfieUrl, setSelfieUrl] = React.useState<string | null>(null);
 
-  // Component View States
+  // Component UI View States
+  const [uiMode, setUiMode] = React.useState<UiMode>("select-access");
   const [hasConsented, setHasConsented] = React.useState(false);
   const [inputMode, setInputMode] = React.useState<"select" | "camera" | "upload">("select");
   const [selectedSelfie, setSelectedSelfie] = React.useState<File | null>(null);
@@ -43,6 +46,8 @@ export default function RoomPage() {
   // AI matching states
   const [processingStage, setProcessingStage] = React.useState<"detecting" | "aligning" | "embedding" | "matching" | "complete">("detecting");
   const [matchedPhotos, setMatchedPhotos] = React.useState<MatchedPhotoInfo[]>([]);
+  const [allPhotos, setAllPhotos] = React.useState<MatchedPhotoInfo[]>([]);
+  const [loadingAllPhotos, setLoadingAllPhotos] = React.useState(false);
   const [selectedPhotoIds, setSelectedPhotoIds] = React.useState<string[]>([]);
   const [matchingDone, setMatchingDone] = React.useState(false);
 
@@ -75,6 +80,25 @@ export default function RoomPage() {
     }
   };
 
+  // Helper to load all photos for open gallery browsing
+  const loadAllRoomPhotos = async () => {
+    setLoadingAllPhotos(true);
+    try {
+      console.log("[RoomPage] Querying all photos for room:", roomId);
+      const q = query(collection(db, "photos"), where("roomId", "==", roomId));
+      const snap = await getDocs(q);
+      const fetched = snap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() as any }));
+      setAllPhotos(fetched);
+      setSelectedPhotoIds(fetched.map((p: any) => p.id));
+      setUiMode("gallery-all");
+    } catch (err) {
+      console.error("Failed to load room gallery:", err);
+      toast.error("Failed to load all photos.");
+    } finally {
+      setLoadingAllPhotos(false);
+    }
+  };
+
   // Restore/Initialize Guest Session Automatically
   React.useEffect(() => {
     if (isLoadingRoom || !room) return;
@@ -96,17 +120,22 @@ export default function RoomPage() {
         // Fetch guestSession from Firestore
         const sessionRef = doc(db, "guestSessions", uid);
         const sessionSnap = await getDoc(sessionRef);
+        const requiresVerify = room.requireFaceVerification ?? false;
 
         if (sessionSnap.exists()) {
           const sessionData = sessionSnap.data();
           if (sessionData.roomId === roomId) {
-            setSelfieUploaded(!!sessionData.selfieUploaded);
-            if (sessionData.selfieUploaded) {
+            const isVerified = !!sessionData.faceVerified;
+            setFaceVerified(isVerified);
+            if (isVerified) {
               const url = sessionData.secureUrl || sessionData.selfie?.secureUrl || null;
               setSelfieUrl(url);
               setSelfiePreviewUrl(url);
               setMatchingDone(true);
+              setUiMode("gallery-matched");
               await loadMatchedPhotos(sessionData.matchedPhotos || []);
+            } else {
+              setUiMode(requiresVerify ? "verification" : "select-access");
             }
           } else {
             // New room session needed for this guest
@@ -114,11 +143,13 @@ export default function RoomPage() {
               uid,
               roomId,
               joinedAt: serverTimestamp(),
+              faceVerified: false,
               selfieUploaded: false,
               matchedPhotos: []
             }, { merge: true });
-            setSelfieUploaded(false);
+            setFaceVerified(false);
             setSelfieUrl(null);
+            setUiMode(requiresVerify ? "verification" : "select-access");
           }
         } else {
           // Create new session document
@@ -126,11 +157,13 @@ export default function RoomPage() {
             uid,
             roomId,
             joinedAt: serverTimestamp(),
+            faceVerified: false,
             selfieUploaded: false,
             matchedPhotos: []
           });
-          setSelfieUploaded(false);
+          setFaceVerified(false);
           setSelfieUrl(null);
+          setUiMode(requiresVerify ? "verification" : "select-access");
         }
       } catch (err) {
         console.error("Failed to initialize guest session:", err);
@@ -146,7 +179,6 @@ export default function RoomPage() {
   // Create selfie URL preview for scanner visualization
   React.useEffect(() => {
     if (!selectedSelfie) {
-      // If we restored from session, we don't clear the preview URL
       if (!selfieUrl) {
         setSelfiePreviewUrl(null);
       }
@@ -180,7 +212,7 @@ export default function RoomPage() {
       const uid = guestUid || auth.currentUser?.uid;
       if (!uid) throw new Error("No active guest session found.");
 
-      // STEP 6: Upload selfie to Cloudinary
+      // Upload selfie to Cloudinary
       const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
       const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || "snapevent_upload";
       
@@ -211,20 +243,22 @@ export default function RoomPage() {
         selfie: { secureUrl, publicId }
       });
 
-      setSelfieUploaded(true);
       setSelfieUrl(secureUrl);
 
-      // STEP 7: AI matching
+      // AI matching
       const response = await matchSelfieMutation.mutateAsync({
         roomId,
         selfieFile: file,
       });
 
-      // Save matched photo ids to Firestore document
+      // Save matched photo ids to Firestore document and set faceVerified to true
       const matchedPhotoIds = (response.photos || []).map((p) => p.id);
       await updateDoc(sessionRef, {
+        faceVerified: true,
         matchedPhotos: matchedPhotoIds
       });
+
+      setFaceVerified(true);
 
       // Clear timers and finish
       clearTimeout(t1);
@@ -237,6 +271,7 @@ export default function RoomPage() {
         setMatchedPhotos(response.photos || []);
         setSelectedPhotoIds((response.photos || []).map((p) => p.id));
         setMatchingDone(true);
+        setUiMode("gallery-matched");
       }, 500);
 
     } catch (err: any) {
@@ -254,7 +289,7 @@ export default function RoomPage() {
     setMatchedPhotos([]);
     setSelectedPhotoIds([]);
     setMatchingDone(false);
-    setSelfieUploaded(false);
+    setFaceVerified(false);
     setSelfieUrl(null);
     setSelfiePreviewUrl(null);
     setInputMode("select");
@@ -264,6 +299,7 @@ export default function RoomPage() {
     if (uid) {
       const sessionRef = doc(db, "guestSessions", uid);
       await updateDoc(sessionRef, {
+        faceVerified: false,
         selfieUploaded: false,
         secureUrl: null,
         publicId: null,
@@ -271,6 +307,9 @@ export default function RoomPage() {
         matchedPhotos: []
       });
     }
+
+    const requiresVerify = room?.requireFaceVerification ?? false;
+    setUiMode(requiresVerify ? "verification" : "select-access");
   };
 
   // Selector handlers
@@ -280,8 +319,12 @@ export default function RoomPage() {
     );
   };
 
-  const handleSelectAll = () => {
+  const handleSelectAllMatched = () => {
     setSelectedPhotoIds(matchedPhotos.map((p) => p.id));
+  };
+
+  const handleSelectAllGeneric = () => {
+    setSelectedPhotoIds(allPhotos.map((p) => p.id));
   };
 
   const handleDeselectAll = () => {
@@ -327,6 +370,7 @@ export default function RoomPage() {
     : "Date TBD";
 
   const isClosed = room.status === "closed";
+  const requiresVerify = room.requireFaceVerification ?? false;
 
   return (
     <PublicLayout>
@@ -339,7 +383,7 @@ export default function RoomPage() {
           <div className="space-y-3.5 max-w-xl">
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary/10 border border-primary/20 text-[10px] font-black uppercase text-primary tracking-wider">
               <Sparkles className="h-3 w-3 animate-pulse" />
-              Event Live Sharing Portal
+              {requiresVerify ? "Strict Face verification active" : "Event Live Sharing Portal"}
             </span>
             <h1 className="text-2xl md:text-3xl font-black text-foreground tracking-tight leading-tight">
               {room.name}
@@ -384,15 +428,63 @@ export default function RoomPage() {
           </div>
         )}
 
-        {/* 2. Privacy Consent Block */}
-        {!hasConsented && (
+        {/* Case 2 Choice Screen */}
+        {uiMode === "select-access" && (
+          <div className="max-w-md mx-auto bg-card border border-border rounded-3xl p-6 shadow-sm space-y-6 text-center">
+            <div className="space-y-2">
+              <h3 className="font-extrabold text-base text-foreground">Welcome to the Event Portal</h3>
+              <p className="text-xs text-muted-foreground max-w-xs mx-auto leading-relaxed">
+                Choose how you want to access the shared photos.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 pt-2">
+              <Button
+                onClick={() => setUiMode("verification")}
+                className="h-14 bg-primary text-primary-foreground font-black shadow-md shadow-primary/10 rounded-2xl text-xs gap-2 flex flex-col items-center justify-center p-3"
+              >
+                <div className="flex items-center gap-1.5">
+                  <Search className="h-4 w-4" />
+                  Find My Photos
+                </div>
+                <span className="text-[9px] font-medium text-primary-foreground/80 lowercase">
+                  Search by selfie to find only photos with your face
+                </span>
+              </Button>
+
+              <Button
+                variant="outline"
+                onClick={loadAllRoomPhotos}
+                disabled={loadingAllPhotos}
+                className="h-14 border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-900 font-black rounded-2xl text-xs gap-2 flex flex-col items-center justify-center p-3"
+              >
+                {loadingAllPhotos ? (
+                  <LoadingSpinner className="h-4 w-4" />
+                ) : (
+                  <>
+                    <div className="flex items-center gap-1.5 text-primary">
+                      <Images className="h-4 w-4" />
+                      Browse All Photos
+                    </div>
+                    <span className="text-[9px] font-medium text-muted-foreground/80 lowercase">
+                      Browse all photos taken during the event
+                    </span>
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Camera flow consent block */}
+        {uiMode === "verification" && !hasConsented && (
           <div className="max-w-xl mx-auto">
             <PrivacyNotice onAccept={() => setHasConsented(true)} />
           </div>
         )}
 
-        {/* 3. Interactive Selfie Upload / Camera capture area */}
-        {hasConsented && !selectedSelfie && !matchingDone && (
+        {/* Camera flow camera/upload interface */}
+        {uiMode === "verification" && hasConsented && !selectedSelfie && (
           <div className="max-w-md mx-auto space-y-6">
             
             {inputMode === "select" && (
@@ -424,6 +516,15 @@ export default function RoomPage() {
                     Upload from Gallery
                   </Button>
                 </div>
+
+                {!requiresVerify && (
+                  <button
+                    onClick={() => setUiMode("select-access")}
+                    className="text-[10px] font-bold text-zinc-400 hover:underline pt-2"
+                  >
+                    Go Back
+                  </button>
+                )}
               </div>
             )}
 
@@ -459,8 +560,8 @@ export default function RoomPage() {
           </div>
         )}
 
-        {/* 4. Scanning loader overlays */}
-        {selectedSelfie && !matchingDone && (
+        {/* Scanning loader overlays */}
+        {uiMode === "verification" && selectedSelfie && !matchingDone && (
           <div className="relative max-w-sm mx-auto">
             {selfiePreviewUrl && (
               <div className="relative aspect-square max-w-[240px] mx-auto overflow-hidden rounded-2xl border border-zinc-300 dark:border-zinc-800 mb-6 bg-zinc-950 shadow-md">
@@ -478,8 +579,89 @@ export default function RoomPage() {
           </div>
         )}
 
-        {/* 5. Match results page */}
-        {matchingDone && (
+        {/* Case 2 Browse All Gallery */}
+        {uiMode === "gallery-all" && (
+          <div className="space-y-6 animate-in fade-in duration-300">
+            <div className="flex items-center justify-between gap-4 p-4 rounded-2xl bg-zinc-50 dark:bg-zinc-900 border border-border">
+              <div>
+                <p className="text-xs font-bold text-foreground">Browsing all event photos</p>
+                <p className="text-[10px] text-muted-foreground font-semibold uppercase">
+                  Open Gallery Mode
+                </p>
+              </div>
+
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setUiMode("verification")}
+                  className="h-9 px-3.5 text-xs font-bold rounded-xl border-zinc-200 dark:border-zinc-800 gap-1"
+                >
+                  <Search className="h-3.5 w-3.5 text-primary" />
+                  Find My Photos
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setUiMode("select-access")}
+                  className="h-9 px-3.5 text-xs font-bold rounded-xl border-zinc-200 dark:border-zinc-800 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                >
+                  Go Back
+                </Button>
+              </div>
+            </div>
+
+            {allPhotos.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-center space-y-4 border border-border rounded-3xl bg-card/40 max-w-md mx-auto">
+                <div className="h-16 w-16 rounded-3xl bg-zinc-100 dark:bg-zinc-900 border border-border flex items-center justify-center text-zinc-400">
+                  <Images className="h-7 w-7 text-zinc-400" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-foreground">No photos found yet.</h3>
+                  <p className="text-xs text-muted-foreground max-w-xs mt-1 mx-auto leading-relaxed">
+                    No photos have been uploaded to this event room yet by the photographer.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <MatchGallery
+                title="Event Photo Gallery"
+                photos={allPhotos}
+                selectedPhotoIds={selectedPhotoIds}
+                onSelectToggle={handleSelectToggle}
+                onSelectAll={handleSelectAllGeneric}
+                onDeselectAll={handleDeselectAll}
+                onRequestDownload={() => {}}
+              />
+            )}
+
+            {/* Float action bar for generic gallery downloads */}
+            {allPhotos.length > 0 && selectedPhotoIds.length > 0 && (
+              <div className="fixed bottom-6 inset-x-4 z-40 flex justify-center pointer-events-none">
+                <div className="pointer-events-auto bg-zinc-950 border border-zinc-800 p-4 rounded-3xl shadow-2xl flex items-center gap-4 text-white max-w-lg w-full justify-between animate-in slide-in-from-bottom duration-300">
+                  <div className="pl-2">
+                    <p className="text-xs font-extrabold">Ready to download</p>
+                    <p className="text-[10px] text-zinc-400 mt-0.5 font-bold uppercase">
+                      {selectedPhotoIds.length} of {allPhotos.length} photos selected
+                    </p>
+                  </div>
+                  
+                  <RequestDownloadButton
+                    roomId={roomId}
+                    photographerId={room.photographerId}
+                    photoIds={selectedPhotoIds}
+                    onSuccess={() => {
+                      setSelectedPhotoIds([]);
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* AI Matched gallery result view */}
+        {uiMode === "gallery-matched" && (
           <div className="space-y-6">
             
             {/* Selfie Review Header */}
@@ -503,15 +685,35 @@ export default function RoomPage() {
                 </div>
               </div>
 
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleReset}
-                className="h-9 px-3 text-xs font-bold rounded-xl border-zinc-200 dark:border-zinc-800 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/20 gap-1"
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-                Change Selfie
-              </Button>
+              <div className="flex gap-2">
+                {!requiresVerify && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={loadAllRoomPhotos}
+                    disabled={loadingAllPhotos}
+                    className="h-9 px-3.5 text-xs font-bold rounded-xl border-zinc-200 dark:border-zinc-800 gap-1.5"
+                  >
+                    {loadingAllPhotos ? (
+                      <LoadingSpinner className="h-3.5 w-3.5" />
+                    ) : (
+                      <>
+                        <Images className="h-3.5 w-3.5 text-primary" />
+                        Browse All Photos
+                      </>
+                    )}
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleReset}
+                  className="h-9 px-3 text-xs font-bold rounded-xl border-zinc-200 dark:border-zinc-800 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/20 gap-1"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  Change Selfie
+                </Button>
+              </div>
             </div>
 
             {matchedPhotos.length === 0 ? (
@@ -534,9 +736,9 @@ export default function RoomPage() {
                 photos={matchedPhotos}
                 selectedPhotoIds={selectedPhotoIds}
                 onSelectToggle={handleSelectToggle}
-                onSelectAll={handleSelectAll}
+                onSelectAll={handleSelectAllMatched}
                 onDeselectAll={handleDeselectAll}
-                onRequestDownload={() => {}} // Handle inside RequestDownloadButton wrapper below
+                onRequestDownload={() => {}}
               />
             )}
 

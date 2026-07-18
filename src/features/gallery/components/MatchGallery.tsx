@@ -10,6 +10,7 @@ interface MatchGalleryProps {
   onSelectAll: () => void;
   onDeselectAll: () => void;
   onRequestDownload: () => void;
+  title?: string;
 }
 
 export function MatchGallery({
@@ -19,6 +20,7 @@ export function MatchGallery({
   onSelectAll,
   onDeselectAll,
   onRequestDownload,
+  title,
 }: MatchGalleryProps) {
   const [activePhotoIndex, setActivePhotoIndex] = React.useState<number | null>(null);
 
@@ -48,7 +50,7 @@ export function MatchGallery({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 border border-zinc-200 dark:border-zinc-800 rounded-2xl bg-card">
         <div>
           <h3 className="text-sm font-black tracking-tight text-foreground uppercase">
-            Your Matched Photos ({photos.length} found)
+            {title || "Your Matched Photos"} ({photos.length} found)
           </h3>
           <p className="text-[10px] text-muted-foreground mt-0.5 font-bold uppercase">
             {selectedPhotoIds.length} of {photos.length} selected for download
