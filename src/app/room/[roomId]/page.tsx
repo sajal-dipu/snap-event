@@ -18,32 +18,23 @@ import { useMatchSelfieMutation, type MatchedPhotoInfo } from "@/features/galler
 import { Camera, Upload, Shield, Calendar, MapPin, Sparkles, RefreshCw } from "lucide-react";
 import { formatDate } from "@/utils/formatters";
 import { toast } from "sonner";
+import { auth } from "@/lib/firebase/auth";
+import { signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import { db } from "@/lib/firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
 
 export default function RoomPage() {
   const params = useParams();
   const router = useRouter();
   const roomId = params?.roomId as string;
 
-  // 1. Fetch Room details
-  const { data: room, isLoading: isLoadingRoom, error: roomError } = useQuery({
-    queryKey: ["room-details", roomId],
-    queryFn: () => roomService.getById(roomId),
-    enabled: !!roomId,
-  });
+  // Session states
+  const [guestUid, setGuestUid] = React.useState<string | null>(null);
+  const [sessionLoading, setSessionLoading] = React.useState(true);
+  const [selfieUploaded, setSelfieUploaded] = React.useState(false);
+  const [selfieUrl, setSelfieUrl] = React.useState<string | null>(null);
 
-  // Guest join validation check
-  React.useEffect(() => {
-    if (isLoadingRoom || !room) return;
-    
-    if (typeof window !== "undefined") {
-      const joined = localStorage.getItem(`guest-joined-${roomId}`);
-      if (joined !== "true") {
-        router.push(`/join/${roomId}`);
-      }
-    }
-  }, [roomId, room, isLoadingRoom, router]);
-
-  // 2. Component View States
+  // Component View States
   const [hasConsented, setHasConsented] = React.useState(false);
   const [inputMode, setInputMode] = React.useState<"select" | "camera" | "upload">("select");
   const [selectedSelfie, setSelectedSelfie] = React.useState<File | null>(null);
@@ -57,17 +48,115 @@ export default function RoomPage() {
 
   const matchSelfieMutation = useMatchSelfieMutation();
 
+  // 1. Fetch Room details
+  const { data: room, isLoading: isLoadingRoom, error: roomError } = useQuery({
+    queryKey: ["room-details", roomId],
+    queryFn: () => roomService.getById(roomId),
+    enabled: !!roomId,
+  });
+
+  // Helper to load matched photo documents from root photos collection based on matched ids list
+  const loadMatchedPhotos = async (photoIds: string[]) => {
+    if (!photoIds || photoIds.length === 0) {
+      setMatchedPhotos([]);
+      return;
+    }
+    try {
+      const docs = await Promise.all(
+        photoIds.map(id => getDoc(doc(db, "photos", id)))
+      );
+      const fetchedPhotos = docs
+        .filter(d => d.exists())
+        .map(d => ({ id: d.id, ...d.data() } as any));
+      setMatchedPhotos(fetchedPhotos);
+      setSelectedPhotoIds(fetchedPhotos.map((p: any) => p.id));
+    } catch (err) {
+      console.error("Failed to load matched photos:", err);
+    }
+  };
+
+  // Restore/Initialize Guest Session Automatically
+  React.useEffect(() => {
+    if (isLoadingRoom || !room) return;
+
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      try {
+        let uid = user?.uid;
+        if (!uid) {
+          console.log("[RoomPage] Guest not logged in. Signing in anonymously...");
+          const cred = await signInAnonymously(auth);
+          uid = cred.user.uid;
+        }
+
+        console.log("[RoomPage] Guest session initialized:", uid);
+        setGuestUid(uid);
+        localStorage.setItem("guestRoomId", roomId);
+        localStorage.setItem("guestUid", uid);
+
+        // Fetch guestSession from Firestore
+        const sessionRef = doc(db, "guestSessions", uid);
+        const sessionSnap = await getDoc(sessionRef);
+
+        if (sessionSnap.exists()) {
+          const sessionData = sessionSnap.data();
+          if (sessionData.roomId === roomId) {
+            setSelfieUploaded(!!sessionData.selfieUploaded);
+            if (sessionData.selfieUploaded) {
+              const url = sessionData.secureUrl || sessionData.selfie?.secureUrl || null;
+              setSelfieUrl(url);
+              setSelfiePreviewUrl(url);
+              setMatchingDone(true);
+              await loadMatchedPhotos(sessionData.matchedPhotos || []);
+            }
+          } else {
+            // New room session needed for this guest
+            await setDoc(sessionRef, {
+              uid,
+              roomId,
+              joinedAt: serverTimestamp(),
+              selfieUploaded: false,
+              matchedPhotos: []
+            }, { merge: true });
+            setSelfieUploaded(false);
+            setSelfieUrl(null);
+          }
+        } else {
+          // Create new session document
+          await setDoc(sessionRef, {
+            uid,
+            roomId,
+            joinedAt: serverTimestamp(),
+            selfieUploaded: false,
+            matchedPhotos: []
+          });
+          setSelfieUploaded(false);
+          setSelfieUrl(null);
+        }
+      } catch (err) {
+        console.error("Failed to initialize guest session:", err);
+        toast.error("Failed to initialize session. Please reload.");
+      } finally {
+        setSessionLoading(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [roomId, room, isLoadingRoom]);
+
   // Create selfie URL preview for scanner visualization
   React.useEffect(() => {
     if (!selectedSelfie) {
-      setSelfiePreviewUrl(null);
+      // If we restored from session, we don't clear the preview URL
+      if (!selfieUrl) {
+        setSelfiePreviewUrl(null);
+      }
       return;
     }
     const url = URL.createObjectURL(selectedSelfie);
     setSelfiePreviewUrl(url);
     
     return () => URL.revokeObjectURL(url);
-  }, [selectedSelfie]);
+  }, [selectedSelfie, selfieUrl]);
 
   // Handle Selfie Input (File Upload or Camera Capture)
   const handleSelfieSelected = (file: File) => {
@@ -88,9 +177,53 @@ export default function RoomPage() {
     const t3 = setTimeout(() => setProcessingStage("matching"), 2800);
 
     try {
+      const uid = guestUid || auth.currentUser?.uid;
+      if (!uid) throw new Error("No active guest session found.");
+
+      // STEP 6: Upload selfie to Cloudinary
+      const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+      const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || "snapevent_upload";
+      
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("upload_preset", uploadPreset);
+      formData.append("folder", `guest_selfies/${roomId}`);
+
+      const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!uploadRes.ok) {
+        throw new Error("Failed to upload selfie to Cloudinary.");
+      }
+
+      const uploadResult = await uploadRes.json();
+      const secureUrl = uploadResult.secure_url;
+      const publicId = uploadResult.public_id;
+
+      // Update Firestore document with selfie details
+      const sessionRef = doc(db, "guestSessions", uid);
+      await updateDoc(sessionRef, {
+        selfieUploaded: true,
+        secureUrl,
+        publicId,
+        selfie: { secureUrl, publicId }
+      });
+
+      setSelfieUploaded(true);
+      setSelfieUrl(secureUrl);
+
+      // STEP 7: AI matching
       const response = await matchSelfieMutation.mutateAsync({
         roomId,
         selfieFile: file,
+      });
+
+      // Save matched photo ids to Firestore document
+      const matchedPhotoIds = (response.photos || []).map((p) => p.id);
+      await updateDoc(sessionRef, {
+        matchedPhotos: matchedPhotoIds
       });
 
       // Clear timers and finish
@@ -102,25 +235,42 @@ export default function RoomPage() {
       // Delay slightly for dramatic transition effect
       setTimeout(() => {
         setMatchedPhotos(response.photos || []);
-        // Select all by default to make download selection easier
         setSelectedPhotoIds((response.photos || []).map((p) => p.id));
         setMatchingDone(true);
       }, 500);
 
-    } catch (err) {
+    } catch (err: any) {
       clearTimeout(t1);
       clearTimeout(t2);
       clearTimeout(t3);
       setSelectedSelfie(null);
+      setSelfiePreviewUrl(null);
+      toast.error(err?.message || "Failed to process matching pipeline.");
     }
   };
 
-  const handleReset = () => {
+  const handleReset = async () => {
     setSelectedSelfie(null);
     setMatchedPhotos([]);
     setSelectedPhotoIds([]);
     setMatchingDone(false);
+    setSelfieUploaded(false);
+    setSelfieUrl(null);
+    setSelfiePreviewUrl(null);
     setInputMode("select");
+
+    // Clean up Firestore guestSession fields
+    const uid = guestUid || auth.currentUser?.uid;
+    if (uid) {
+      const sessionRef = doc(db, "guestSessions", uid);
+      await updateDoc(sessionRef, {
+        selfieUploaded: false,
+        secureUrl: null,
+        publicId: null,
+        selfie: null,
+        matchedPhotos: []
+      });
+    }
   };
 
   // Selector handlers
@@ -139,7 +289,7 @@ export default function RoomPage() {
   };
 
   // Main Loading view
-  if (isLoadingRoom) {
+  if (isLoadingRoom || sessionLoading) {
     return (
       <PublicLayout>
         <div className="min-h-[70vh] flex flex-col items-center justify-center text-center gap-3">
@@ -242,7 +392,7 @@ export default function RoomPage() {
         )}
 
         {/* 3. Interactive Selfie Upload / Camera capture area */}
-        {hasConsented && !selectedSelfie && (
+        {hasConsented && !selectedSelfie && !matchingDone && (
           <div className="max-w-md mx-auto space-y-6">
             
             {inputMode === "select" && (
@@ -370,7 +520,7 @@ export default function RoomPage() {
                   <Sparkles className="h-7 w-7 text-zinc-400" />
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-sm text-foreground">No Photos Matched</h3>
+                  <h3 className="font-extrabold text-sm text-foreground">No photos found yet.</h3>
                   <p className="text-xs text-muted-foreground max-w-xs mt-1 mx-auto leading-relaxed">
                     We could not find any photos matching your face in this event room. Please check if photos are still being processed or try another selfie.
                   </p>

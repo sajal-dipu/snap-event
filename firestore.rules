@@ -310,5 +310,18 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: guestSessions
+    // ─────────────────────────────────────────────────────────
+
+    match /guestSessions/{guestId} {
+      allow read, write: if (isAuthenticated() && request.auth.uid == guestId) ||
+                            (isAuthenticated() &&
+                             exists(/databases/$(database)/documents/photographers/$(request.auth.uid)) &&
+                             resource != null &&
+                             resource.data.roomId != null &&
+                             exists(/databases/$(database)/documents/photographers/$(request.auth.uid)/rooms/$(resource.data.roomId)));
+      allow create: if isAuthenticated() && request.auth.uid == guestId;
+    }
   }
 }

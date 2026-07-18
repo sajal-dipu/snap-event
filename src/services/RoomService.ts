@@ -537,6 +537,37 @@ export class RoomService {
 
       onProgress?.("metadata");
 
+      // STEP 9: Fetch guestSessions to delete their Cloudinary selfies and document references
+      const sessionsQuery = query(
+        collection(db, "guestSessions"),
+        where("roomId", "==", roomId)
+      );
+      const sessionsSnap = await getDocs(sessionsQuery);
+      const sessions = sessionsSnap.docs.map((docSnap) => ({ id: docSnap.id, ref: docSnap.ref, ...docSnap.data() as any }));
+
+      for (const session of sessions) {
+        const selfiePublicId = session.publicId || session.selfie?.publicId;
+        if (selfiePublicId) {
+          try {
+            let cleanPublicId = selfiePublicId;
+            const dotIndex = cleanPublicId.lastIndexOf(".");
+            if (dotIndex !== -1) {
+              cleanPublicId = cleanPublicId.substring(0, dotIndex);
+            }
+            const res = await fetch("/api/cloudinary/delete", {
+              method: "DELETE",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ publicId: cleanPublicId }),
+            });
+            if (res.ok) {
+              console.log("Deleted Guest Selfie Cloudinary:", cleanPublicId);
+            }
+          } catch (err) {
+            console.error(`Error deleting guest selfie: ${selfiePublicId}`, err);
+          }
+        }
+      }
+
       // STEP 3 & 4: Fetch all other related Firestore metadata
       // 1. Nested photos in subcollection
       const subPhotosQuery = query(
@@ -555,6 +586,12 @@ export class RoomService {
 
       // Collect all references to delete
       const refsToDelete: any[] = [];
+
+      // Guest sessions
+      sessions.forEach((session) => {
+        refsToDelete.push(session.ref);
+        console.log("Deleted Guest Session Metadata:", session.id);
+      });
       
       // Root photos
       photosSnap.docs.forEach((docSnap) => {
