@@ -570,6 +570,7 @@ export interface DownloadRequest {
 
   // Download link
   downloadUrl?: string;             // Signed Cloudinary zip URL
+  downloadEnabled?: boolean;
   downloadExpiresAt?: Timestamp;
   downloadToken?: string;           // Secure unique token for URL resolution
   downloadCount?: number;           // Total downloads tracked

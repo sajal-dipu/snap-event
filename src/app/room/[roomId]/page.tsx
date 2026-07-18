@@ -39,6 +39,7 @@ export default function RoomPage() {
   // Download request states
   const [downloadRequest, setDownloadRequest] = React.useState<any | null>(null);
   const [loadingRequest, setLoadingRequest] = React.useState(false);
+  const unsubscribeDownloadRequestRef = React.useRef<(() => void) | null>(null);
 
   // Component UI View States
   const [uiMode, setUiMode] = React.useState<UiMode>("select-access");
@@ -87,6 +88,13 @@ export default function RoomPage() {
   const fetchDownloadRequest = React.useCallback(async () => {
     const uid = guestUid || auth.currentUser?.uid;
     if (!uid) return;
+
+    // Unsubscribe from any existing listener
+    if (unsubscribeDownloadRequestRef.current) {
+      unsubscribeDownloadRequestRef.current();
+      unsubscribeDownloadRequestRef.current = null;
+    }
+
     setLoadingRequest(true);
     try {
       const q = query(
@@ -94,15 +102,20 @@ export default function RoomPage() {
         where("guestUid", "==", uid),
         where("roomId", "==", roomId)
       );
-      const snap = await getDocs(q);
-      if (!snap.empty) {
-        setDownloadRequest({ id: snap.docs[0].id, ...snap.docs[0].data() });
-      } else {
-        setDownloadRequest(null);
-      }
+
+      unsubscribeDownloadRequestRef.current = onSnapshot(q, (snap) => {
+        if (!snap.empty) {
+          setDownloadRequest({ id: snap.docs[0].id, ...snap.docs[0].data() });
+        } else {
+          setDownloadRequest(null);
+        }
+        setLoadingRequest(false);
+      }, (err) => {
+        console.error("Failed to subscribe to download request updates:", err);
+        setLoadingRequest(false);
+      });
     } catch (err) {
-      console.error("Failed to fetch download request status:", err);
-    } finally {
+      console.error("Failed to set up download request listener:", err);
       setLoadingRequest(false);
     }
   }, [guestUid, roomId]);
@@ -131,6 +144,11 @@ export default function RoomPage() {
     if (guestUid) {
       fetchDownloadRequest();
     }
+    return () => {
+      if (unsubscribeDownloadRequestRef.current) {
+        unsubscribeDownloadRequestRef.current();
+      }
+    };
   }, [guestUid, fetchDownloadRequest]);
 
   // Helper to load all photos for open gallery browsing
@@ -163,16 +181,42 @@ export default function RoomPage() {
     if (isLoadingRoom || !room) return;
 
     let unsubscribeSession: (() => void) | null = null;
+    let active = true;
 
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    const initializeSession = async () => {
       try {
-        let uid = user?.uid;
-        if (!uid) {
-          console.log("[RoomPage] Guest not logged in. Signing in anonymously...");
-          const cred = await signInAnonymously(auth);
-          uid = cred.user.uid;
+        // Wait for Firebase Auth to completely initialize
+        if (typeof (auth as any).authStateReady === "function") {
+          await (auth as any).authStateReady();
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 300));
         }
 
+        if (!active) return;
+
+        let currentUser = auth.currentUser;
+        if (!currentUser) {
+          // Check if there's any saved guest session to wait for
+          const savedUid = localStorage.getItem("guestUid");
+          const savedRoomId = localStorage.getItem("guestRoomId");
+          
+          if (!savedUid || savedRoomId !== roomId) {
+            console.log("[RoomPage] No saved session. Signing in anonymously...");
+            const cred = await signInAnonymously(auth);
+            currentUser = cred.user;
+          } else {
+            // Wait for auth state change to capture the restored user if it takes a moment
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            currentUser = auth.currentUser;
+            if (!currentUser) {
+              console.log("[RoomPage] Saved session restore failed. Signing in anonymously...");
+              const cred = await signInAnonymously(auth);
+              currentUser = cred.user;
+            }
+          }
+        }
+
+        const uid = currentUser.uid;
         console.log("[RoomPage] Guest session initialized:", uid);
         setGuestUid(uid);
         localStorage.setItem("guestRoomId", roomId);
@@ -238,12 +282,16 @@ export default function RoomPage() {
         console.error("Failed to initialize guest session:", err);
         toast.error("Failed to initialize session. Please reload.");
       } finally {
-        setSessionLoading(false);
+        if (active) {
+          setSessionLoading(false);
+        }
       }
-    });
+    };
+
+    initializeSession();
 
     return () => {
-      unsubscribe();
+      active = false;
       if (unsubscribeSession) {
         unsubscribeSession();
       }
