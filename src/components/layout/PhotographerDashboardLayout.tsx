@@ -79,6 +79,7 @@ export function PhotographerDashboardLayout({ children }: DashboardLayoutProps) 
   const menuItems = [
     { label: "🏠 Home", href: "/dashboard", icon: LayoutDashboard },
     { label: "📁 Virtual Rooms", href: "/dashboard/rooms", icon: FolderKanban },
+    { label: "📥 Download Requests", href: "/dashboard/download-requests", icon: FileDown },
     { label: "📅 Bookings", href: "/dashboard/bookings", icon: CalendarDays },
     { label: "🛒 Marketplace", href: "/dashboard/marketplace", icon: ShoppingBag },
     { label: "👤 Profile", href: "/dashboard/profile", icon: User },

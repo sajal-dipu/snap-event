@@ -323,5 +323,18 @@ service cloud.firestore {
                              exists(/databases/$(database)/documents/photographers/$(request.auth.uid)/rooms/$(resource.data.roomId)));
       allow create: if isAuthenticated() && request.auth.uid == guestId;
     }
+
+    // ─────────────────────────────────────────────────────────
+    // COLLECTION: downloadRequests
+    // ─────────────────────────────────────────────────────────
+
+    match /downloadRequests/{requestId} {
+      allow create: if isAuthenticated();
+      allow read, write: if isAuthenticated() &&
+                            (request.auth.uid == resource.data.guestUid ||
+                             (exists(/databases/$(database)/documents/photographers/$(request.auth.uid)) &&
+                              resource.data.roomId != null &&
+                              exists(/databases/$(database)/documents/photographers/$(request.auth.uid)/rooms/$(resource.data.roomId))));
+    }
   }
 }

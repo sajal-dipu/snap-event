@@ -553,9 +553,14 @@ export interface DownloadRequest {
   customerEmail?: string;           // Optional email
   specialMessage?: string;          // Optional guest message
   selfiePublicId?: string;          // Cloudinary selfie for face match
+  guestUid?: string;
+  guestName?: string;
+  email?: string;
+  phone?: string;
 
   // Requested photos
   requestedPhotoIds: string[];      // Array of photo IDs
+  requestedPhotos?: string[];
   approvedPhotoIds: string[];       // Subset approved by photographer
   rejectedPhotoIds: string[];       // Subset rejected
 

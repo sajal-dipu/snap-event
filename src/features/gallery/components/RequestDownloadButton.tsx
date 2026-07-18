@@ -182,7 +182,7 @@ export function RequestDownloadButton({
                 <textarea
                   {...register("message")}
                   placeholder="E.g., Please approve this quickly, loved the wedding shots!"
-                  className="flex min-h-[80px] w-full rounded-xl border border-input bg-transparent px-3 py-2 text-xs shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 border-zinc-200 dark:border-zinc-800 focus:border-primary text-foreground"
+                  className="flex min-h-[80px] w-full rounded-xl border border-input bg-transparent px-3 py-2 text-xs shadow-sm placeholder:text-zinc-400 dark:placeholder:text-zinc-500 text-black dark:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 border-zinc-200 dark:border-zinc-800 focus:border-primary"
                 />
                 {errors.message && (
                   <p className="text-[10px] text-red-500 font-bold">{errors.message.message}</p>

@@ -27,7 +27,7 @@ import type {
 } from "@/types";
 
 export class DownloadRequestService {
-  private readonly collection = "download_requests";
+  private readonly collection = "downloadRequests";
 
   /**
    * Guest submits a download request (optionally with selfie for face match).
@@ -39,6 +39,12 @@ export class DownloadRequestService {
 
       const docRef = await addDoc(collection(db, this.collection), {
         ...parsed,
+        roomId: parsed.roomId,
+        guestUid: parsed.customerId,
+        guestName: parsed.customerName,
+        email: parsed.customerEmail || "",
+        phone: parsed.customerPhone || "",
+        requestedPhotos: parsed.requestedPhotoIds || [],
         approvedPhotoIds: [],
         rejectedPhotoIds: [],
         matchedPhotoIds: [],
@@ -357,13 +363,18 @@ export class DownloadRequestService {
       id: snap.id,
       roomId: d.roomId,
       photographerId: d.photographerId,
-      customerId: d.customerId,
-      customerName: d.customerName,
-      customerPhone: d.customerPhone ?? "",
-      customerEmail: d.customerEmail,
+      customerId: d.guestUid || d.customerId || "",
+      guestUid: d.guestUid || d.customerId || "",
+      customerName: d.guestName || d.customerName || "",
+      guestName: d.guestName || d.customerName || "",
+      customerPhone: d.phone || d.customerPhone || "",
+      phone: d.phone || d.customerPhone || "",
+      customerEmail: d.email || d.customerEmail || "",
+      email: d.email || d.customerEmail || "",
       specialMessage: d.specialMessage,
       selfiePublicId: d.selfiePublicId,
-      requestedPhotoIds: d.requestedPhotoIds ?? [],
+      requestedPhotoIds: d.requestedPhotos || d.requestedPhotoIds || [],
+      requestedPhotos: d.requestedPhotos || d.requestedPhotoIds || [],
       approvedPhotoIds: d.approvedPhotoIds ?? [],
       rejectedPhotoIds: d.rejectedPhotoIds ?? [],
       matchedPhotoIds: d.matchedPhotoIds ?? [],
