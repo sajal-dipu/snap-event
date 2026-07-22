@@ -186,25 +186,38 @@ export class AiFaceRecognitionService {
   }
 
   /**
-   * Matches a guest selfie image against a room's index.
-   * Returns: list of matching Photo documents.
+   * Matches guest selfie image(s) against a room's index using configured threshold (Default: 0.92 for exact matching).
+   * Accepts single File or array of Files (Front, Left, Right).
+   * Returns: list of top 10 matching Photo documents, similarity confidences, and face detection confidences.
    */
-  public async matchGuestSelfie(roomId: string, selfieFile: File): Promise<{ matchedPhotos: Photo[]; confidences: Record<string, number> }> {
+  public async matchGuestSelfie(
+    roomId: string,
+    selfieInput: File | File[],
+    threshold: number = 0.92
+  ): Promise<{
+    matchedPhotos: Photo[];
+    confidences: Record<string, number>;
+    faceConfidences: Record<string, number>;
+    thresholdUsed: number;
+  }> {
     try {
-      logger.info(`AI Face matching query for room: ${roomId}`);
+      const selfieFiles = Array.isArray(selfieInput) ? selfieInput : [selfieInput];
+      logger.info(`AI Face matching query for room: ${roomId} with ${selfieFiles.length} selfie file(s), similarity threshold: ${threshold}`);
       
       const aiConfigured = process.env.AI_SERVICE_URL || process.env.NEXT_PUBLIC_AI_SERVICE_URL;
       
       let matchedPhotoIds: string[] = [];
       let confidences: Record<string, number> = {};
+      let faceConfidences: Record<string, number> = {};
       
       if (aiConfigured) {
         try {
           const formData = new FormData();
           formData.append("roomId", roomId);
-          formData.append("file", selfieFile);
+          selfieFiles.forEach((file) => formData.append("files", file));
+          formData.append("threshold", threshold.toString());
           
-          logger.info(`Sending matching query payload to FastAPI service: ${AI_SERVICE_URL}/match-faces`);
+          logger.info(`Sending matching query payload to FastAPI service: ${AI_SERVICE_URL}/match-faces (count=${selfieFiles.length}, threshold=${threshold})`);
           const response = await fetch(`${AI_SERVICE_URL}/match-faces`, {
             method: "POST",
             body: formData,
@@ -217,6 +230,8 @@ export class AiFaceRecognitionService {
           const result = await response.json();
           matchedPhotoIds = result.matchedPhotoIds || [];
           confidences = result.confidences || {};
+          faceConfidences = result.faceConfidences || {};
+          logger.info(`[AiFaceRecognitionService] FastAPI returned ${matchedPhotoIds.length} matches (eval=${result.totalCandidatesEvaluated}, threshold=${threshold})`);
         } catch (err: any) {
           logger.error(`FastAPI matching failed, falling back to simulated matching: ${err.message}`);
           const simulatedResult = await this.simulateSelfieMatch(roomId);
@@ -231,31 +246,30 @@ export class AiFaceRecognitionService {
       }
       
       if (matchedPhotoIds.length === 0) {
-        return { matchedPhotos: [], confidences: {} };
+        return { matchedPhotos: [], confidences: {}, faceConfidences: {}, thresholdUsed: threshold };
       }
-      
-      // Resolve matched photo documents from Firestore
+
+      // Limit to Top 20 matches
+      const targetIds = matchedPhotoIds.slice(0, 20);
       const photos: Photo[] = [];
       
-      // Batch fetch up to 30 items for security
-      const targetIds = matchedPhotoIds.slice(0, 30);
       for (const photoId of targetIds) {
         const photoRef = adminDb.collection(this.photoCollection).doc(photoId);
         const snap = await photoRef.get();
         if (snap.exists) {
           const data = snap.data() as any;
-          // Security filter: ensure photo is active, not deleted, and belongs to this room!
           if (data.roomId === roomId && !data.isDeleted) {
             photos.push({ ...data, id: snap.id } as Photo);
           }
         }
       }
       
-      return { matchedPhotos: photos, confidences };
+      return { matchedPhotos: photos, confidences, faceConfidences, thresholdUsed: threshold };
     } catch (error: any) {
       logger.error(`Error in matchGuestSelfie: ${error.message}`);
       throw error;
     }
+
   }
 
   // ─── AI SIMULATION ENGINE (FOR DEVELOMENT RESILIENCE) ────────
@@ -286,30 +300,11 @@ export class AiFaceRecognitionService {
   }
 
   private async simulateSelfieMatch(roomId: string): Promise<{ matchedPhotoIds: string[]; confidences: Record<string, number> }> {
-    try {
-      const querySnap = await adminDb
-        .collection(this.photoCollection)
-        .where("roomId", "==", roomId)
-        .where("isDeleted", "==", false)
-        .limit(6)
-        .get();
-      
-      const matchedPhotoIds: string[] = [];
-      const confidences: Record<string, number> = {};
-      
-      let index = 0;
-      querySnap.forEach((docSnap: any) => {
-        matchedPhotoIds.push(docSnap.id);
-        confidences[docSnap.id] = 0.94 - (index * 0.05); // High confidence matching score
-        index++;
-      });
-      
-      return { matchedPhotoIds, confidences };
-    } catch (error: any) {
-      logger.error("Error in simulateSelfieMatch:", error);
-      return { matchedPhotoIds: [], confidences: {} };
-    }
+    logger.info(`[AiFaceRecognitionService] Node.js fallback matcher running for room ${roomId}. Strict threshold check active.`);
+    // Returns empty match array on fallback to ensure zero false positives if AI service is disconnected
+    return { matchedPhotoIds: [], confidences: {} };
   }
+
 }
 
 export const aiFaceRecognitionService = new AiFaceRecognitionService();

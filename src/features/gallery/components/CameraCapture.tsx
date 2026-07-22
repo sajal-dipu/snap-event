@@ -12,7 +12,7 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const streamRef = React.useRef<MediaStream | null>(null);
-  
+
   const [stream, setStream] = React.useState<MediaStream | null>(null);
   const [capturedImage, setCapturedImage] = React.useState<string | null>(null);
   const [capturedFile, setCapturedFile] = React.useState<File | null>(null);
@@ -122,44 +122,44 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
 
   React.useEffect(() => {
     if (
-       stream &&
-       hasPermission &&
-       videoRef.current
+      stream &&
+      hasPermission &&
+      videoRef.current
     ) {
-       const video = videoRef.current;
-       video.srcObject = stream;
+      const video = videoRef.current;
+      video.srcObject = stream;
 
-       const startVideo = async () => {
-          try {
-             await new Promise((resolve) => {
-                if (video.readyState >= 1) {
-                   resolve(true);
-                } else {
-                   video.onloadedmetadata = () => resolve(true);
-                }
-             });
+      const startVideo = async () => {
+        try {
+          await new Promise((resolve) => {
+            if (video.readyState >= 1) {
+              resolve(true);
+            } else {
+              video.onloadedmetadata = () => resolve(true);
+            }
+          });
 
-             console.log(videoRef.current);
-             console.log(stream);
-             console.log(stream?.getTracks());
-             console.log(video.videoWidth);
-             console.log(video.videoHeight);
+          console.log(videoRef.current);
+          console.log(stream);
+          console.log(stream?.getTracks());
+          console.log(video.videoWidth);
+          console.log(video.videoHeight);
 
-             await video.play();
-             setIsVideoPlaying(true);
+          await video.play();
+          setIsVideoPlaying(true);
 
-             console.log("Camera Started");
-             console.log(video.readyState);
-             console.log(video.videoWidth);
-             console.log(video.videoHeight);
-          }
-          catch(err){
-             console.error(err);
-             setIsVideoPlaying(false);
-          }
-       };
+          console.log("Camera Started");
+          console.log(video.readyState);
+          console.log(video.videoWidth);
+          console.log(video.videoHeight);
+        }
+        catch (err) {
+          console.error(err);
+          setIsVideoPlaying(false);
+        }
+      };
 
-       startVideo();
+      startVideo();
     }
   }, [stream, hasPermission]);
 
@@ -221,7 +221,7 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
     if (videoRef.current && stream) {
       const video = videoRef.current;
       video.srcObject = stream;
-      
+
       video.play()
         .then(() => {
           setIsVideoPlaying(true);
@@ -305,7 +305,7 @@ export function CameraCapture({ onCapture, onCancel }: CameraCaptureProps) {
                     const video = videoRef.current;
                     await video.play();
                     setIsVideoPlaying(true);
-                    
+
                     console.log(video.readyState);
                     console.log(video.videoWidth);
                     console.log(video.videoHeight);

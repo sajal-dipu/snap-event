@@ -55,8 +55,19 @@ export default function RoomPage() {
   const [loadingAllPhotos, setLoadingAllPhotos] = React.useState(false);
   const [selectedPhotoIds, setSelectedPhotoIds] = React.useState<string[]>([]);
   const [matchingDone, setMatchingDone] = React.useState(false);
+  const [similarityThreshold, setSimilarityThreshold] = React.useState<number>(0.92);
+
 
   const matchSelfieMutation = useMatchSelfieMutation();
+
+  const handleThresholdChange = (newThreshold: number) => {
+    setSimilarityThreshold(newThreshold);
+    if (selectedSelfie) {
+      toast.info(`Updating face match with threshold: ${newThreshold}`);
+      triggerMatchingPipeline(selectedSelfie, newThreshold);
+    }
+  };
+
 
   // 1. Fetch Room details
   const { data: room, isLoading: isLoadingRoom, error: roomError } = useQuery({
@@ -319,7 +330,8 @@ export default function RoomPage() {
   };
 
   // Run the animated matching pipeline
-  const triggerMatchingPipeline = async (file: File) => {
+  const triggerMatchingPipeline = async (file: File, overrideThreshold?: number) => {
+    const activeThreshold = overrideThreshold !== undefined ? overrideThreshold : similarityThreshold;
     setMatchingDone(false);
     setMatchedPhotos([]);
     setSelectedPhotoIds([]);
@@ -371,7 +383,9 @@ export default function RoomPage() {
       const response = await matchSelfieMutation.mutateAsync({
         roomId,
         selfieFile: file,
+        threshold: activeThreshold,
       });
+
 
       // Save matched photo ids to Firestore document and set faceVerified to true
       const matchedPhotoIds = (response.photos || []).map((p) => p.id);
@@ -907,7 +921,11 @@ export default function RoomPage() {
                 onSelectAll={handleSelectAllMatched}
                 onDeselectAll={handleDeselectAll}
                 onRequestDownload={() => {}}
+                roomId={roomId}
+                currentThreshold={similarityThreshold}
+                onThresholdChange={handleThresholdChange}
               />
+
             )}
 
              {/* Float action bar for request status tracking */}

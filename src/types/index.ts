@@ -141,6 +141,9 @@ export interface AvailabilitySlot {
 export interface FaceData {
   faceId: string;            // External face recognition ID
   confidence: number;        // 0.0 – 1.0
+  embedding?: number[];      // 512-dimensional vector embedding
+  blurScore?: number;        // Image gradient variance blur metric
+  isBlurred?: boolean;       // Quality filter flag
   boundingBox?: {
     left: number;
     top: number;
@@ -148,6 +151,18 @@ export interface FaceData {
     height: number;
   };
 }
+
+/** User feedback recorded on AI face matching results */
+export interface MatchFeedback {
+  id?: string;
+  photoId: string;
+  roomId: string;
+  guestUid?: string;
+  feedback: "this_is_me" | "not_my_photo";
+  confidenceScore: number;
+  createdAt: any;
+}
+
 
 /** QR code metadata for virtual rooms */
 export interface QRCodeData {

@@ -17,6 +17,8 @@ import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/contexts/AuthContext";
 import { extractExif } from "@/utils/exif";
 import { useCreatePhotoMutation } from "../hooks/useGallery";
+import { toast } from "sonner";
+
 
 export interface QueueItem {
   id: string;
@@ -77,21 +79,58 @@ export function UploadQueue({ files, roomId, onClear, onUploadComplete }: Upload
     );
   }, []);
 
+  const uploadingIdsRef = React.useRef<Set<string>>(new Set());
+
   // Execute upload request to Cloudinary
   const uploadFile = React.useCallback(async (item: QueueItem) => {
-    // 1. Set status to uploading
+    console.log("UPLOAD START");
+    console.log("UPLOAD FUNCTION CALLED", item.name);
+
+    if (uploadingIdsRef.current.has(item.id)) {
+      console.log(`[LOG] UPLOAD SKIPPED: Item "${item.name}" (id: ${item.id}) is already currently uploading.`);
+      return;
+    }
+    uploadingIdsRef.current.add(item.id);
+
     updateItemStatus(item.id, "uploading", 0);
+    console.log(`[LOG] Starting generic upload workflow for "${item.name}" (${item.size} bytes) in room "${roomId}"`);
 
     try {
       const photographerId = user?.uid;
-      if (!photographerId) throw new Error("Unauthenticated user profile");
+      if (!photographerId) {
+        const errMsg = "Unauthenticated user profile. Please log in as a photographer.";
+        console.error(`[LOG] Upload Error: ${errMsg}`);
+        toast.error(errMsg);
+        updateItemStatus(item.id, "failed", 0, errMsg);
+        uploadingIdsRef.current.delete(item.id);
+        return;
+      }
+
+      if (!roomId) {
+        const errMsg = "Missing target roomId for upload.";
+        console.error(`[LOG] Upload Error: ${errMsg}`);
+        toast.error(errMsg);
+        updateItemStatus(item.id, "failed", 0, errMsg);
+        uploadingIdsRef.current.delete(item.id);
+        return;
+      }
+
+      const maxSizeBytes = 20 * 1024 * 1024;
+      if (item.file.size > maxSizeBytes) {
+        const errMsg = `File "${item.name}" exceeds 20MB limit (${(item.file.size / (1024 * 1024)).toFixed(1)}MB).`;
+        console.error(`[LOG] Upload Error: ${errMsg}`);
+        toast.error(errMsg);
+        updateItemStatus(item.id, "failed", 0, errMsg);
+        uploadingIdsRef.current.delete(item.id);
+        return;
+      }
 
       // Extract EXIF client-side
       let exif = null;
       try {
         exif = await extractExif(item.file);
       } catch (exifErr) {
-        console.warn("Could not extract EXIF data:", exifErr);
+        console.warn("[LOG] Could not extract EXIF data:", exifErr);
       }
 
       // 2. Prepare unsigned upload
@@ -100,7 +139,12 @@ export function UploadQueue({ files, roomId, onClear, onUploadComplete }: Upload
       const uploadPreset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || "snapevent_upload";
 
       if (!cloudName) {
-        throw new Error("Missing NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME env variable.");
+        const errMsg = "Missing NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME environment variable.";
+        console.error(`[LOG] Upload Error: ${errMsg}`);
+        toast.error(errMsg);
+        updateItemStatus(item.id, "failed", 0, errMsg);
+        uploadingIdsRef.current.delete(item.id);
+        return;
       }
 
       // 3. Initiate XMLHttpRequest upload to Cloudinary
@@ -110,8 +154,8 @@ export function UploadQueue({ files, roomId, onClear, onUploadComplete }: Upload
       formData.append("upload_preset", uploadPreset);
       formData.append("folder", folderPath);
 
-      console.log(`[UploadQueue] Starting client-side Cloudinary upload for: "${item.name}"`);
-      console.log(`- Preset: "${uploadPreset}", Cloud: "${cloudName}", Folder: "${folderPath}"`);
+      console.log(`[LOG] CALLING CLOUDINARY UPLOAD API FOR: ${item.name}`);
+      console.log(`[LOG] Starting Cloudinary upload for "${item.name}". Preset: "${uploadPreset}", Cloud: "${cloudName}"`);
 
       xhr.open("POST", `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, true);
 
@@ -125,18 +169,17 @@ export function UploadQueue({ files, roomId, onClear, onUploadComplete }: Upload
 
       // Completion listener
       xhr.onload = async () => {
-        console.log(`[UploadQueue] Cloudinary response status for "${item.name}": ${xhr.status}`);
+        console.log(`[LOG] Cloudinary response status for "${item.name}": ${xhr.status}`);
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             const result = JSON.parse(xhr.responseText);
-            console.log("Upload Result:", result);
-            console.log(`[UploadQueue] Upload response parsing successful for "${item.name}". Metadata details:`, {
-              secureUrl: result.secure_url,
-              publicId: result.public_id
+            console.log(`[LOG] Cloudinary upload successful for "${item.name}":`, {
+              secure_url: result.secure_url,
+              public_id: result.public_id,
             });
 
-            // 4. Save metadata to Firestore
-            console.log(`[UploadQueue] Saving metadata to Firestore for "${item.name}"...`);
+            console.log(`[LOG] CALLING FIRESTORE SAVE DOC FOR: ${item.name}`);
+            console.log(`[LOG] Saving metadata to Firestore for "${item.name}"...`);
             const photoId = await createPhoto.mutateAsync({
               roomId,
               photographerId,
@@ -154,7 +197,7 @@ export function UploadQueue({ files, roomId, onClear, onUploadComplete }: Upload
               exif,
               tags: result.tags || [],
             });
-            console.log(`[UploadQueue] Successfully created Firestore document. photoId: "${photoId}"`);
+            console.log(`[LOG] Firestore document created successfully. photoId: "${photoId}"`);
 
             // Trigger background face recognition analysis on the AI service (fire-and-forget)
             fetch("/api/gallery/process-photo", {
@@ -162,32 +205,48 @@ export function UploadQueue({ files, roomId, onClear, onUploadComplete }: Upload
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ photoId, roomId }),
             }).catch((apiErr) => {
-              console.error("[UploadQueue] AI face registration processing failed:", apiErr);
+              console.error("[LOG] AI face registration API failed:", apiErr);
             });
 
             updateItemStatus(item.id, "success", 100);
           } catch (dbErr: any) {
-            console.error("[UploadQueue] Firestore save error:", dbErr);
-            updateItemStatus(item.id, "failed", 100, dbErr.message || "Failed to save photo doc");
+            const errMsg = `Firestore save error for "${item.name}": ${dbErr.message || "Failed to save photo doc"}`;
+            console.error(`[LOG] ${errMsg}`, dbErr);
+            toast.error(errMsg);
+            updateItemStatus(item.id, "failed", 100, errMsg);
           }
         } else {
-          console.error(`[UploadQueue] Cloudinary upload failed. HTTP Status: ${xhr.status}. Complete Response:`, xhr.responseText);
-          updateItemStatus(item.id, "failed", 100, `Cloudinary HTTP Error ${xhr.status}`);
+          let cErrorMsg = `Cloudinary HTTP Error ${xhr.status}`;
+          try {
+            const parsed = JSON.parse(xhr.responseText);
+            cErrorMsg = parsed.error?.message || cErrorMsg;
+          } catch (e) {
+            cErrorMsg = xhr.responseText || cErrorMsg;
+          }
+          const fullErr = `Upload failed for "${item.name}": ${cErrorMsg}`;
+          console.error(`[LOG] ${fullErr}`);
+          toast.error(fullErr);
+          updateItemStatus(item.id, "failed", 100, fullErr);
         }
+        uploadingIdsRef.current.delete(item.id);
         setActiveUploads((prev) => Math.max(0, prev - 1));
       };
 
       // Error listener
       xhr.onerror = () => {
-        console.error(`[UploadQueue] Network connection issue encountered during upload for "${item.name}".`);
-        updateItemStatus(item.id, "failed", 100, "Network connection issue");
+        const errMsg = `Network error while uploading "${item.name}". Please check internet connection.`;
+        console.error(`[LOG] ${errMsg}`);
+        toast.error(errMsg);
+        updateItemStatus(item.id, "failed", 100, errMsg);
+        uploadingIdsRef.current.delete(item.id);
         setActiveUploads((prev) => Math.max(0, prev - 1));
       };
 
       // Abort listener
       xhr.onabort = () => {
-        console.warn(`[UploadQueue] Upload execution aborted by user for "${item.name}".`);
+        console.warn(`[LOG] Upload execution cancelled by user for "${item.name}".`);
         updateItemStatus(item.id, "cancelled", 0, "Upload cancelled by user");
+        uploadingIdsRef.current.delete(item.id);
         setActiveUploads((prev) => Math.max(0, prev - 1));
       };
 
@@ -200,11 +259,16 @@ export function UploadQueue({ files, roomId, onClear, onUploadComplete }: Upload
       xhr.send(formData);
       setActiveUploads((prev) => prev + 1);
     } catch (err: any) {
-      console.error("[UploadQueue] Fatal exception caught in upload handler:", err);
-      updateItemStatus(item.id, "failed", 0, err.message || "Failed to upload file");
+      const fatalErr = `Upload fatal error for "${item.name}": ${err.message || "Unexpected exception"}`;
+      console.error("[LOG] Fatal exception caught in upload handler:", err);
+      toast.error(fatalErr);
+      updateItemStatus(item.id, "failed", 0, fatalErr);
+      uploadingIdsRef.current.delete(item.id);
       setActiveUploads((prev) => Math.max(0, prev - 1));
     }
   }, [user, roomId, createPhoto, updateItemStatus, updateItemProgress]);
+
+
 
   // Initialize queue when files change
   React.useEffect(() => {

@@ -41,52 +41,76 @@ export function RoomPhotoUploader({ onFilesSelected, existingPhotos }: RoomPhoto
   };
 
   const processSelectedFiles = (fileList: File[]) => {
-    const allowedExtensions = ["jpg", "jpeg", "png", "webp"];
-    const maxSizeBytes = 20 * 1024 * 1024; // 20 MB
+    try {
+      console.log(`[LOG] Photo Selection Triggered. Total selected raw files: ${fileList.length}`);
+      console.log("[LOG] Selected files details:", fileList.map(f => ({ name: f.name, size: f.size, type: f.type })));
 
-    const validFiles: File[] = [];
-    const existingNames = new Set(
-      existingPhotos.map((p) => p.fileName || p.originalFilename || "")
-    );
+      const allowedExtensions = ["jpg", "jpeg", "png", "webp"];
+      const maxSizeBytes = 20 * 1024 * 1024; // 20 MB
 
-    for (const file of fileList) {
-      const ext = file.name.split(".").pop()?.toLowerCase() || "";
-      
-      // Validation 1: Format check
-      if (!allowedExtensions.includes(ext)) {
-        toast.error(`"${file.name}" rejected: Unsupported format (only JPG, JPEG, PNG, WEBP allowed).`);
-        continue;
+      const validFiles: File[] = [];
+      const existingNames = new Set(
+        existingPhotos.map((p) => p.fileName || p.originalFilename || "")
+      );
+
+      for (const file of fileList) {
+        const ext = file.name.split(".").pop()?.toLowerCase() || "";
+        
+        // Validation 1: Format check
+        if (!allowedExtensions.includes(ext)) {
+          const errMsg = `"${file.name}" rejected: Unsupported format (only JPG, JPEG, PNG, WEBP allowed).`;
+          console.warn(`[LOG] Validation Error: ${errMsg}`);
+          toast.error(errMsg);
+          continue;
+        }
+
+        // Validation 2: Size check
+        if (file.size > maxSizeBytes) {
+          const errMsg = `"${file.name}" rejected: Exceeds 20MB limit (${(file.size / (1024 * 1024)).toFixed(1)}MB).`;
+          console.warn(`[LOG] Validation Error: ${errMsg}`);
+          toast.error(errMsg);
+          continue;
+        }
+
+        // Validation 3: Duplicate check
+        if (existingNames.has(file.name)) {
+          const errMsg = `"${file.name}" rejected: Already uploaded to this room.`;
+          console.warn(`[LOG] Validation Error: ${errMsg}`);
+          toast.error(errMsg);
+          continue;
+        }
+
+        validFiles.push(file);
       }
 
-      // Validation 2: Size check
-      if (file.size > maxSizeBytes) {
-        toast.error(`"${file.name}" rejected: Exceeds 20MB limit.`);
-        continue;
+      if (validFiles.length === 0) {
+        toast.error("No valid photo files selected for upload.");
+        return;
       }
 
-      // Validation 3: Duplicate check
-      if (existingNames.has(file.name)) {
-        toast.error(`"${file.name}" rejected: Already uploaded to this room.`);
-        continue;
+      console.log(`[LOG] Valid files passing pre-checks: ${validFiles.length}`);
+
+      // Limit check: max 100 images per batch
+      if (validFiles.length > 100) {
+        toast.warning("Maximum batch limit is 100 images. Only the first 100 will be added.");
+        onFilesSelected(validFiles.slice(0, 100));
+      } else {
+        onFilesSelected(validFiles);
       }
-
-      validFiles.push(file);
-    }
-
-    if (validFiles.length === 0) {
-      return;
-    }
-
-    // Limit check: max 100 images per batch
-    if (validFiles.length > 100) {
-      toast.warning("Maximum batch limit is 100 images. Only the first 100 will be added.");
-      onFilesSelected(validFiles.slice(0, 100));
-    } else {
-      onFilesSelected(validFiles);
+    } catch (err: any) {
+      console.error("[LOG] Exception during file processing in RoomPhotoUploader:", err);
+      toast.error(err?.message || "Failed to process selected files");
     }
   };
 
-  const triggerFileBrowser = () => fileInputRef.current?.click();
+  const triggerFileBrowser = (e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    fileInputRef.current?.click();
+  };
+
 
   return (
     <div className="space-y-4 select-none animate-in fade-in duration-300">
